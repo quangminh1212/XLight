@@ -28,9 +28,10 @@ XLight uses a **dual-engine architecture** to ensure maximum compatibility:
 
 ### Engine 1: Gamma Ramp (Software)
 - Adjusts display gamma tables via OS APIs
-- **Windows**: `SetDeviceGammaRamp` (GDI32)
-- **Linux**: `xrandr --brightness --gamma`
-- **macOS**: `CGSetDisplayTransferByTable` (CoreGraphics)
+- **Windows**: `SetDeviceGammaRamp` (GDI32) — per-display DC via `CreateDCW`
+- **Linux X11**: `xrandr --brightness --gamma` — per-output control
+- **Linux Wayland**: `wlr-randr` / `brightnessctl` / sysfs backlight
+- **macOS**: `CGSetDisplayTransferByTable` (CoreGraphics) — per-display ID
 - ✅ Works on **ANY** monitor — no hardware support required
 
 ### Engine 2: DDC/CI (Hardware)
@@ -198,7 +199,8 @@ XLight/
 ├───────────┼──────────────────┼───────────────┤
 │      OS Display API     Monitor I²C Bus      │
 │  Win: GDI32            screen_brightness_ctrl │
-│  Linux: xrandr                                │
+│  Linux: xrandr/wlr/                           │
+│         brightnessctl/sysfs                    │
 │  macOS: CoreGraphics                          │
 └─────────────────────────────────────────────┘
 ```
@@ -207,16 +209,32 @@ XLight/
 
 ## Platform Support Matrix
 
-| Feature | Windows | Linux | macOS |
-|---|:---:|:---:|:---:|
-| Software Brightness (Gamma) | ✅ | ✅ | ✅ |
-| Hardware Brightness (DDC/CI) | ✅ | ✅ | ⚠️ |
-| Color Temperature | ✅ | ✅ | ✅ |
-| Multi-Monitor | ✅ | ✅ | ✅ |
-| System Tray | ✅ | ✅ | ✅ |
-| CLI Mode | ✅ | ✅ | ✅ |
+| Feature | Windows | Linux (X11) | Linux (Wayland) | macOS |
+|---|:---:|:---:|:---:|:---:|
+| Software Brightness (Gamma) | ✅ | ✅ xrandr | ✅ wlr-randr/brightnessctl | ✅ CoreGraphics |
+| Hardware Brightness (DDC/CI) | ✅ | ✅ | ✅ | ⚠️ |
+| Color Temperature | ✅ | ✅ | ✅ | ✅ |
+| Multi-Monitor (mixed types) | ✅ | ✅ | ✅ | ✅ |
+| Laptop Built-in Display | ✅ WMI | ✅ sysfs/brightnessctl | ✅ sysfs/brightnessctl | ✅ |
+| System Tray | ✅ | ✅ | ✅ | ✅ |
+| CLI Mode | ✅ | ✅ | ✅ | ✅ |
 
 > ⚠️ macOS DDC/CI requires additional setup and may not work with all monitors.
+
+---
+
+## Monitor Cable Type Compatibility
+
+Gamma Ramp (software) works with **ALL** cable types. DDC/CI availability depends on the monitor:
+
+| Cable Type | Gamma (Software) | DDC/CI (Hardware) | Notes |
+|---|:---:|:---:|---|
+| HDMI | ✅ | ✅ Usually | Most monitors support DDC over HDMI |
+| DisplayPort | ✅ | ✅ Usually | Best DDC/CI support |
+| USB-C / Thunderbolt | ✅ | ✅ Varies | Depends on adapter/dock |
+| DVI-D | ✅ | ✅ Usually | Digital DVI supports DDC |
+| DVI-A / VGA | ✅ | ❌ Rare | Analog — gamma ramp only |
+| Laptop Built-in | ✅ | ✅ WMI/sysfs | Uses OS backlight API, not DDC |
 
 ---
 
@@ -238,24 +256,42 @@ XLight/
 ## Troubleshooting
 
 ### Brightness doesn't change
-- Enable **Gamma** mode (software) — works on all monitors
-- If using DDC/CI, ensure your monitor supports it (check monitor OSD menu)
-- On Linux, ensure `xrandr` is available
+- Enable **Gamma** mode (software) — works on all monitors regardless of cable type
+- If using DDC/CI, ensure your monitor supports it (check monitor OSD → DDC/CI setting)
+- On Linux X11, ensure `xrandr` is available
+- On Linux Wayland, install `wlr-randr` or `brightnessctl`
+
+### Multi-monitor: Only one monitor changes
+- XLight creates per-display device contexts (Windows: `CreateDCW`, Linux: `--output`)
+- If one monitor doesn't respond, it may not support gamma ramp (very rare)
+- DDC/CI for specific monitors may require compatible cable (HDMI/DP preferred over VGA)
+
+### VGA/Analog monitor not responding to DDC
+- VGA cables don't support DDC/CI — use **Gamma mode** instead (always works)
+- Enable the "Gamma" checkbox in the footer
 
 ### Monitor not detected
-- Check cable connection (DDC/CI requires compatible cable)
-- On Linux, install `ddcutil` and add user to `i2c` group
+- Check cable connection (try HDMI/DP instead of VGA for best compatibility)
+- On Linux, install `ddcutil` and add user to `i2c` group: `sudo usermod -aG i2c $USER`
 - Try restarting the application
 
 ### Gamma resets after reboot
-- This is expected — gamma ramp changes are temporary
+- This is expected — gamma ramp changes are temporary (same as f.lux, Redshift)
 - Run XLight at startup to reapply settings
+
+### Linux Wayland: No gamma control
+```bash
+# For wlroots-based compositors (Sway, Hyprland)
+sudo apt install wlr-randr
+# OR for laptop backlight
+sudo apt install brightnessctl
+```
 
 ### Linux: `python3-tk` not found
 ```bash
-sudo apt install python3-tk  # Debian/Ubuntu
-sudo dnf install python3-tkinter  # Fedora
-sudo pacman -S tk  # Arch
+sudo apt install python3-tk          # Debian/Ubuntu
+sudo dnf install python3-tkinter      # Fedora
+sudo pacman -S tk                     # Arch
 ```
 
 ---
