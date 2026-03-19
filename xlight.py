@@ -528,22 +528,20 @@ import tkinter as tk
 from tkinter import ttk, simpledialog
 
 COLORS = {
-    'bg': '#1a1b26',
-    'bg_card': '#24253a',
-    'bg_hover': '#2f3050',
-    'accent': '#7c6aef',
-    'accent_hover': '#9585f5',
-    'text': '#e0def4',
-    'text_dim': '#6e6a86',
-    'border': '#2a2b3d',
-    'warm': '#ff9f43',
-    'cool': '#74b9ff',
-    'trough': '#16172b',
+    'bg': '#ffffff',
+    'card_bg': '#f8f8f8',
+    'text': '#1a1a1a',
+    'text_dim': '#888888',
+    'slider_bg': '#e0e0e0',
+    'slider_fill': '#0078d4',
+    'slider_thumb': '#0078d4',
+    'border': '#e8e8e8',
+    'footer_bg': '#f0f0f0',
 }
 
 
 class XLightApp:
-    """Compact brightness controller."""
+    """Compact brightness controller - Twinkle Tray style."""
 
     def __init__(self):
         self.config = load_config()
@@ -558,19 +556,24 @@ class XLightApp:
         self.root = tk.Tk()
         self.root.title('XLight')
         self.root.configure(bg=COLORS['bg'])
-        self.root.resizable(True, True)
+        self.root.resizable(False, False)
 
-        # Compact size
+        # Compact size matching Twinkle Tray
         n_displays = len(self.displays)
-        win_h = 120 + n_displays * 52 + 52 + 52 + 44  # header+displays+temp+profiles+footer
-        self.root.geometry(f'400x{win_h}')
-        self.root.minsize(360, win_h)
+        win_w = 460
+        win_h = n_displays * 90 + 44  # display cards + footer
+        self.root.geometry(f'{win_w}x{win_h}')
 
-        # Center
+        # Position bottom-right above taskbar (like Twinkle Tray)
         self.root.update_idletasks()
-        x = (self.root.winfo_screenwidth() // 2) - 200
-        y = (self.root.winfo_screenheight() // 2) - (win_h // 2)
+        screen_w = self.root.winfo_screenwidth()
+        screen_h = self.root.winfo_screenheight()
+        x = screen_w - win_w - 16
+        y = screen_h - win_h - 60
         self.root.geometry(f'+{x}+{y}')
+
+        # Remove title bar decorations for cleaner look
+        self.root.overrideredirect(False)
 
         try:
             icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.ico')
@@ -610,178 +613,237 @@ class XLightApp:
             self.displays.append(info)
 
     def _build_ui(self):
-        style = ttk.Style()
-        style.theme_use('clam')
-        style.configure('Slider.Horizontal.TScale',
-                        background=COLORS['bg_card'],
-                        troughcolor=COLORS['trough'],
-                        sliderthickness=14, sliderlength=14)
-        style.map('Slider.Horizontal.TScale',
-                  background=[('active', COLORS['accent_hover'])])
-        style.configure('Footer.TCheckbutton',
-                        background=COLORS['bg'], foreground=COLORS['text_dim'],
-                        font=('Segoe UI', 8))
-
-        pad = tk.Frame(self.root, bg=COLORS['bg'])
-        pad.pack(fill=tk.BOTH, expand=True, padx=12, pady=8)
-
-        # ── Header ──
-        hdr = tk.Frame(pad, bg=COLORS['bg'])
-        hdr.pack(fill=tk.X, pady=(0, 8))
-
-        tk.Label(hdr, text='\u2600', bg=COLORS['bg'], fg=COLORS['accent'],
-                 font=('Segoe UI', 15)).pack(side=tk.LEFT)
-        tk.Label(hdr, text='XLight', bg=COLORS['bg'], fg=COLORS['text'],
-                 font=('Segoe UI', 13, 'bold')).pack(side=tk.LEFT, padx=(4, 0))
-
-        # Reset button
-        tk.Button(hdr, text='\u21BA', bg=COLORS['bg_card'], fg=COLORS['text_dim'],
-                  font=('Segoe UI', 11), relief=tk.FLAT, padx=4, pady=0,
-                  cursor='hand2', activebackground=COLORS['accent'],
-                  activeforeground='white',
-                  command=self._reset_all).pack(side=tk.RIGHT)
-
-        # ── Per-display rows ──
+        """Build Twinkle Tray-style light UI."""
         self.sliders = {}
         self.val_labels = {}
+        self.slider_canvases = {}
 
+        main = tk.Frame(self.root, bg=COLORS['bg'])
+        main.pack(fill=tk.BOTH, expand=True)
+
+        # ── Per-display cards ──
         for i, d in enumerate(self.displays):
-            row = tk.Frame(pad, bg=COLORS['bg_card'])
-            row.pack(fill=tk.X, pady=2, ipady=6)
+            card = tk.Frame(main, bg=COLORS['bg'])
+            card.pack(fill=tk.X, padx=16, pady=(12, 0))
 
-            # Icon
-            icon = '\U0001F5B5' if d.get('hw_supported') else '\U0001F4BB'
-            tk.Label(row, text=icon, bg=COLORS['bg_card'], fg=COLORS['text_dim'],
-                     font=('Segoe UI', 11)).pack(side=tk.LEFT, padx=(10, 4))
+            # Row 1: Icon + Name
+            row1 = tk.Frame(card, bg=COLORS['bg'])
+            row1.pack(fill=tk.X, pady=(0, 6))
 
-            # Name
-            name = d['name'][:22] + '..' if len(d['name']) > 24 else d['name']
-            tk.Label(row, text=name, bg=COLORS['bg_card'], fg=COLORS['text'],
-                     font=('Segoe UI', 9, 'bold')).pack(side=tk.LEFT, padx=(0, 6))
+            tk.Label(row1, text='\U0001F5B5', bg=COLORS['bg'], fg=COLORS['text_dim'],
+                     font=('Segoe UI', 13)).pack(side=tk.LEFT, padx=(0, 8))
 
-            # Value
-            vl = tk.Label(row, text=str(d['brightness']),
-                          bg=COLORS['bg_card'], fg=COLORS['accent'],
-                          font=('Segoe UI', 10, 'bold'), width=4, anchor='e')
-            vl.pack(side=tk.RIGHT, padx=(4, 10))
+            tk.Label(row1, text=d['name'], bg=COLORS['bg'], fg=COLORS['text'],
+                     font=('Segoe UI', 11)).pack(side=tk.LEFT)
+
+            # Row 2: Slider + Value
+            row2 = tk.Frame(card, bg=COLORS['bg'])
+            row2.pack(fill=tk.X)
+
+            # Value label on the right
+            vl = tk.Label(row2, text=str(d['brightness']),
+                          bg=COLORS['bg'], fg=COLORS['text'],
+                          font=('Segoe UI', 14, 'bold'), width=4, anchor='e')
+            vl.pack(side=tk.RIGHT, padx=(12, 0))
             self.val_labels[i] = vl
 
-            # Slider
-            sl = ttk.Scale(row, from_=5, to=100, orient=tk.HORIZONTAL,
-                           style='Slider.Horizontal.TScale',
-                           command=lambda v, idx=i: self._on_slider(v, idx))
-            sl.set(d['brightness'])
-            sl.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(0, 4))
-            self.sliders[i] = sl
+            # Custom canvas slider
+            canvas = tk.Canvas(row2, height=20, bg=COLORS['bg'],
+                               highlightthickness=0, cursor='hand2')
+            canvas.pack(side=tk.LEFT, fill=tk.X, expand=True)
+            self.slider_canvases[i] = canvas
 
-        # ── Separator ──
-        tk.Frame(pad, bg=COLORS['border'], height=1).pack(fill=tk.X, pady=6)
+            # Store slider data
+            self.sliders[i] = {
+                'canvas': canvas,
+                'value': d['brightness'],
+                'dragging': False,
+            }
 
-        # ── Temperature row ──
-        temp_row = tk.Frame(pad, bg=COLORS['bg_card'])
-        temp_row.pack(fill=tk.X, pady=2, ipady=6)
+            # Bind mouse events
+            canvas.bind('<Configure>', lambda e, idx=i: self._draw_slider(idx))
+            canvas.bind('<Button-1>', lambda e, idx=i: self._slider_press(e, idx))
+            canvas.bind('<B1-Motion>', lambda e, idx=i: self._slider_drag(e, idx))
+            canvas.bind('<ButtonRelease-1>', lambda e, idx=i: self._slider_release(e, idx))
 
-        self.temp_dot = tk.Canvas(temp_row, width=16, height=16,
-                                  bg=COLORS['bg_card'], highlightthickness=0)
-        self.temp_dot.pack(side=tk.LEFT, padx=(10, 4))
-        self._draw_temp_dot(self.config['temperature'])
-
-        tk.Label(temp_row, text=t('temperature', self.lang),
-                 bg=COLORS['bg_card'], fg=COLORS['text'],
-                 font=('Segoe UI', 9, 'bold')).pack(side=tk.LEFT, padx=(0, 6))
-
-        self.temp_label = tk.Label(temp_row, text=f"{self.config['temperature']}K",
-                                   bg=COLORS['bg_card'], fg=COLORS['warm'],
-                                   font=('Segoe UI', 10, 'bold'), width=6, anchor='e')
-        self.temp_label.pack(side=tk.RIGHT, padx=(4, 10))
-
-        self.temp_var = tk.IntVar(value=self.config['temperature'])
-        temp_sl = ttk.Scale(temp_row, from_=1000, to=10000,
-                            variable=self.temp_var, orient=tk.HORIZONTAL,
-                            style='Slider.Horizontal.TScale',
-                            command=self._on_temp)
-        temp_sl.pack(side=tk.RIGHT, fill=tk.X, expand=True, padx=(0, 4))
-
-        # ── Separator ──
-        tk.Frame(pad, bg=COLORS['border'], height=1).pack(fill=tk.X, pady=6)
-
-        # ── Profiles row ──
-        prof_row = tk.Frame(pad, bg=COLORS['bg'])
-        prof_row.pack(fill=tk.X, pady=(0, 4))
-
-        tk.Label(prof_row, text=t('profiles', self.lang),
-                 bg=COLORS['bg'], fg=COLORS['text_dim'],
-                 font=('Segoe UI', 8)).pack(side=tk.LEFT, padx=(0, 6))
-
-        self.profile_frame = tk.Frame(prof_row, bg=COLORS['bg'])
-        self.profile_frame.pack(side=tk.LEFT, fill=tk.X, expand=True)
-        self._build_profile_pills()
-
-        tk.Button(prof_row, text='+', bg=COLORS['bg_card'], fg=COLORS['accent'],
-                  font=('Segoe UI', 9, 'bold'), relief=tk.FLAT, padx=5, pady=0,
-                  cursor='hand2', activebackground=COLORS['accent'],
-                  activeforeground='white',
-                  command=self._save_profile).pack(side=tk.RIGHT, padx=(4, 0))
+            # Separator line between displays (not after last)
+            if i < len(self.displays) - 1:
+                tk.Frame(main, bg=COLORS['border'], height=1).pack(fill=tk.X, padx=16, pady=(12, 0))
 
         # ── Footer ──
-        foot = tk.Frame(pad, bg=COLORS['bg'])
-        foot.pack(fill=tk.X, side=tk.BOTTOM, pady=(4, 0))
+        footer = tk.Frame(main, bg=COLORS['footer_bg'], height=44)
+        footer.pack(fill=tk.X, side=tk.BOTTOM)
+        footer.pack_propagate(False)
+
+        tk.Label(footer, text='Adjust Brightness', bg=COLORS['footer_bg'],
+                 fg=COLORS['text_dim'], font=('Segoe UI', 10)).pack(
+                     side=tk.LEFT, padx=(16, 0), pady=10)
+
+        # Footer icons (right side)
+        icon_frame = tk.Frame(footer, bg=COLORS['footer_bg'])
+        icon_frame.pack(side=tk.RIGHT, padx=(0, 12), pady=8)
+
+        # Settings icon
+        tk.Button(icon_frame, text='\u2699', bg=COLORS['footer_bg'],
+                  fg=COLORS['text_dim'], font=('Segoe UI', 14),
+                  relief=tk.FLAT, padx=4, pady=0, cursor='hand2',
+                  activebackground=COLORS['footer_bg'],
+                  command=self._show_settings).pack(side=tk.RIGHT)
+
+        # Reset icon
+        tk.Button(icon_frame, text='\u21BA', bg=COLORS['footer_bg'],
+                  fg=COLORS['text_dim'], font=('Segoe UI', 14),
+                  relief=tk.FLAT, padx=4, pady=0, cursor='hand2',
+                  activebackground=COLORS['footer_bg'],
+                  command=self._reset_all).pack(side=tk.RIGHT)
+
+    def _draw_slider(self, idx):
+        """Draw a custom blue slider on canvas."""
+        canvas = self.sliders[idx]['canvas']
+        value = self.sliders[idx]['value']
+        canvas.delete('all')
+
+        w = canvas.winfo_width()
+        h = canvas.winfo_height()
+        if w <= 1:
+            return
+
+        # Track dimensions
+        track_h = 4
+        track_y = h // 2
+        thumb_r = 7
+        pad = thumb_r + 2
+
+        # Slider position
+        pct = (value - 5) / 95.0  # 5-100 range
+        fill_x = pad + pct * (w - 2 * pad)
+
+        # Background track
+        canvas.create_round_rect = None  # use line for simplicity
+        canvas.create_line(pad, track_y, w - pad, track_y,
+                           fill=COLORS['slider_bg'], width=track_h, capstyle='round')
+
+        # Filled track
+        if fill_x > pad:
+            canvas.create_line(pad, track_y, fill_x, track_y,
+                               fill=COLORS['slider_fill'], width=track_h, capstyle='round')
+
+        # Thumb circle
+        canvas.create_oval(fill_x - thumb_r, track_y - thumb_r,
+                           fill_x + thumb_r, track_y + thumb_r,
+                           fill=COLORS['slider_thumb'], outline='')
+
+    def _slider_pos_to_value(self, x, idx):
+        """Convert canvas x position to slider value (5-100)."""
+        canvas = self.sliders[idx]['canvas']
+        w = canvas.winfo_width()
+        pad = 9
+        pct = (x - pad) / max(1, w - 2 * pad)
+        pct = max(0.0, min(1.0, pct))
+        return int(5 + pct * 95)
+
+    def _slider_press(self, event, idx):
+        self.sliders[idx]['dragging'] = True
+        val = self._slider_pos_to_value(event.x, idx)
+        self._update_slider(idx, val)
+
+    def _slider_drag(self, event, idx):
+        if self.sliders[idx]['dragging']:
+            val = self._slider_pos_to_value(event.x, idx)
+            self._update_slider(idx, val)
+
+    def _slider_release(self, event, idx):
+        self.sliders[idx]['dragging'] = False
+
+    def _update_slider(self, idx, val):
+        """Update slider value, label, and trigger brightness change."""
+        self.sliders[idx]['value'] = val
+        self.val_labels[idx].config(text=str(val))
+        self.displays[idx]['brightness'] = val
+        self._draw_slider(idx)
+        if not self._building:
+            self._debounce()
+
+    def _show_settings(self):
+        """Show settings popup for profiles and modes."""
+        popup = tk.Toplevel(self.root)
+        popup.title('XLight Settings')
+        popup.configure(bg=COLORS['bg'])
+        popup.geometry('320x300')
+        popup.transient(self.root)
+        popup.grab_set()
+
+        # Profiles section
+        tk.Label(popup, text='Profiles', bg=COLORS['bg'], fg=COLORS['text'],
+                 font=('Segoe UI', 11, 'bold')).pack(anchor='w', padx=16, pady=(12, 8))
+
+        for name in self.config.get('profiles', {}):
+            btn_frame = tk.Frame(popup, bg=COLORS['bg'])
+            btn_frame.pack(fill=tk.X, padx=16, pady=2)
+            tk.Button(btn_frame, text=name, bg=COLORS['card_bg'], fg=COLORS['text'],
+                      font=('Segoe UI', 10), relief=tk.FLAT, padx=12, pady=4,
+                      cursor='hand2', anchor='w',
+                      command=lambda n=name, p=popup: (self._apply_profile(n), p.destroy())
+                      ).pack(fill=tk.X)
+
+        # Save profile button
+        tk.Button(popup, text='+ Save Current as Profile', bg=COLORS['slider_fill'],
+                  fg='white', font=('Segoe UI', 10), relief=tk.FLAT,
+                  padx=12, pady=6, cursor='hand2',
+                  command=lambda: (popup.destroy(), self._save_profile())
+                  ).pack(fill=tk.X, padx=16, pady=(12, 4))
+
+        # Separator
+        tk.Frame(popup, bg=COLORS['border'], height=1).pack(fill=tk.X, padx=16, pady=8)
+
+        # Mode toggles
+        tk.Label(popup, text='Brightness Mode', bg=COLORS['bg'], fg=COLORS['text'],
+                 font=('Segoe UI', 11, 'bold')).pack(anchor='w', padx=16, pady=(0, 8))
 
         self.use_gamma = tk.BooleanVar(value=self.config.get('use_gamma', True))
         self.use_hw = tk.BooleanVar(value=self.config.get('use_hardware', True))
 
-        ttk.Checkbutton(foot, text='Gamma', variable=self.use_gamma,
-                        style='Footer.TCheckbutton',
-                        command=self._on_mode).pack(side=tk.LEFT)
-        hw_cb = ttk.Checkbutton(foot, text='DDC/CI', variable=self.use_hw,
-                                style='Footer.TCheckbutton',
-                                command=self._on_mode)
-        hw_cb.pack(side=tk.LEFT, padx=(8, 0))
+        tk.Checkbutton(popup, text='Software (Gamma Ramp)', variable=self.use_gamma,
+                       bg=COLORS['bg'], fg=COLORS['text'], font=('Segoe UI', 10),
+                       selectcolor=COLORS['card_bg'], activebackground=COLORS['bg'],
+                       command=self._on_mode).pack(anchor='w', padx=16)
+        hw_cb = tk.Checkbutton(popup, text='Hardware (DDC/CI)', variable=self.use_hw,
+                               bg=COLORS['bg'], fg=COLORS['text'], font=('Segoe UI', 10),
+                               selectcolor=COLORS['card_bg'], activebackground=COLORS['bg'],
+                               command=self._on_mode)
+        hw_cb.pack(anchor='w', padx=16)
         if not self.hw_backend.available:
             self.use_hw.set(False)
             hw_cb.configure(state='disabled')
 
-        tk.Label(foot, text=f'{len(self.displays)} display(s) \u2022 {platform.system()}',
-                 bg=COLORS['bg'], fg=COLORS['text_dim'],
-                 font=('Segoe UI', 7)).pack(side=tk.RIGHT)
+        # Color temperature
+        tk.Frame(popup, bg=COLORS['border'], height=1).pack(fill=tk.X, padx=16, pady=8)
+        tk.Label(popup, text='Color Temperature', bg=COLORS['bg'], fg=COLORS['text'],
+                 font=('Segoe UI', 11, 'bold')).pack(anchor='w', padx=16, pady=(0, 4))
 
-    def _draw_temp_dot(self, kelvin):
-        r, g, b = _kelvin_to_rgb_multiplier(kelvin)
-        color = f'#{int(r*255):02x}{int(g*255):02x}{int(b*255):02x}'
-        self.temp_dot.delete('all')
-        self.temp_dot.create_oval(1, 1, 15, 15, fill=color, outline=COLORS['border'])
+        temp_frame = tk.Frame(popup, bg=COLORS['bg'])
+        temp_frame.pack(fill=tk.X, padx=16)
 
-    def _build_profile_pills(self):
-        for w in self.profile_frame.winfo_children():
-            w.destroy()
-        for name in self.config.get('profiles', {}):
-            tk.Button(self.profile_frame, text=name,
-                      bg=COLORS['bg_card'], fg=COLORS['text'],
-                      activebackground=COLORS['accent'], activeforeground='white',
-                      font=('Segoe UI', 8), relief=tk.FLAT,
-                      padx=8, pady=2, cursor='hand2',
-                      command=lambda n=name: self._apply_profile(n)
-                      ).pack(side=tk.LEFT, padx=2)
+        self.temp_label = tk.Label(temp_frame, text=f"{self.config['temperature']}K",
+                                   bg=COLORS['bg'], fg=COLORS['text'],
+                                   font=('Segoe UI', 10, 'bold'), width=6, anchor='e')
+        self.temp_label.pack(side=tk.RIGHT)
+
+        self.temp_var = tk.IntVar(value=self.config['temperature'])
+        style = ttk.Style()
+        style.configure('Temp.Horizontal.TScale', background=COLORS['bg'],
+                        troughcolor=COLORS['slider_bg'], sliderthickness=14, sliderlength=14)
+        temp_sl = ttk.Scale(temp_frame, from_=1000, to=10000,
+                            variable=self.temp_var, orient=tk.HORIZONTAL,
+                            style='Temp.Horizontal.TScale',
+                            command=self._on_temp)
+        temp_sl.pack(side=tk.LEFT, fill=tk.X, expand=True, padx=(0, 8))
 
     # ── Event handlers ──
-
-    def _on_slider(self, value, idx):
-        val = int(float(value))
-        self.val_labels[idx].config(text=str(val))
-        self.displays[idx]['brightness'] = val
-        if not self._building:
-            self._debounce()
 
     def _on_temp(self, value):
         val = int(float(value))
         self.temp_label.config(text=f'{val}K')
-        if val < 4000:
-            self.temp_label.config(fg=COLORS['warm'])
-        elif val > 7000:
-            self.temp_label.config(fg=COLORS['cool'])
-        else:
-            self.temp_label.config(fg=COLORS['text'])
-        self._draw_temp_dot(val)
         self.config['temperature'] = val
         if not self._building:
             self._debounce()
@@ -827,11 +889,10 @@ class XLightApp:
         b = p.get('brightness', 100)
         t_val = p.get('temperature', 6500)
         for i in range(len(self.displays)):
-            self.sliders[i].set(b)
-            self.val_labels[i].config(text=str(b))
-            self.displays[i]['brightness'] = b
-        self.temp_var.set(t_val)
-        self._on_temp(str(t_val))
+            self._update_slider(i, b)
+        if hasattr(self, 'temp_var'):
+            self.temp_var.set(t_val)
+            self._on_temp(str(t_val))
 
     def _save_profile(self):
         name = simpledialog.askstring(t('save_profile', self.lang),
@@ -846,15 +907,13 @@ class XLightApp:
                 'temperature': self.config['temperature'],
             }
             save_config(self.config)
-            self._build_profile_pills()
 
     def _reset_all(self):
         for i in range(len(self.displays)):
-            self.sliders[i].set(100)
-            self.val_labels[i].config(text='100')
-            self.displays[i]['brightness'] = 100
-        self.temp_var.set(6500)
-        self._on_temp('6500')
+            self._update_slider(i, 100)
+        if hasattr(self, 'temp_var'):
+            self.temp_var.set(6500)
+            self._on_temp('6500')
         for d in self.displays:
             try:
                 self.gamma_backend.reset_gamma(d['gamma_id'])
