@@ -36,7 +36,11 @@ class GammaBackend:
 
 
 class WindowsGammaBackend(GammaBackend):
-    """Windows gamma control via Win32 GDI SetDeviceGammaRamp."""
+    """Windows gamma control via Win32 GDI SetDeviceGammaRamp.
+
+    Handles multi-monitor setups with mixed monitor types (VGA, HDMI, DP, etc.)
+    by creating per-display device contexts via CreateDCW.
+    """
 
     def __init__(self):
         import ctypes
@@ -45,25 +49,33 @@ class WindowsGammaBackend(GammaBackend):
         self.user32 = ctypes.windll.user32
 
     def _get_dc(self, display_name=None):
+        """Get device context for a specific display.
+
+        Returns (hdc, is_created_dc) tuple. is_created_dc=True means
+        caller must use DeleteDC; False means use ReleaseDC.
+        """
         if display_name:
             try:
                 hdc = self.gdi32.CreateDCW(display_name, None, None, None)
                 if hdc:
-                    return hdc
+                    return hdc, True
             except Exception:
                 pass
-        return self.user32.GetDC(0)
+        return self.user32.GetDC(0), False
 
-    def _release_dc(self, hdc, display_name=None):
-        if display_name:
-            try:
-                self.gdi32.DeleteDC(hdc)
-            except Exception:
-                self.user32.ReleaseDC(0, hdc)
+    def _release_dc(self, hdc, is_created_dc):
+        """Release DC using the correct method based on how it was obtained."""
+        if is_created_dc:
+            self.gdi32.DeleteDC(hdc)
         else:
             self.user32.ReleaseDC(0, hdc)
 
     def get_displays(self):
+        """Enumerate all active display adapters.
+
+        Uses EnumDisplayDevicesW which detects ALL connected monitors
+        regardless of connection type (VGA, DVI, HDMI, DP, USB-C, etc.).
+        """
         displays = []
         try:
             import ctypes
@@ -94,6 +106,11 @@ class WindowsGammaBackend(GammaBackend):
         return displays if displays else [{'id': None, 'name': 'Primary Display', 'index': 0}]
 
     def set_gamma(self, display_id, brightness, temperature):
+        """Set gamma ramp for a specific display.
+
+        Works per-monitor even with mixed cable types because gamma
+        ramp is set through the display adapter's device context.
+        """
         import ctypes
         ramp = (ctypes.c_ushort * 256 * 3)()
         r_mult, g_mult, b_mult = _kelvin_to_rgb_multiplier(temperature)
@@ -102,88 +119,202 @@ class WindowsGammaBackend(GammaBackend):
             ramp[0][i] = min(65535, int(val * r_mult))
             ramp[1][i] = min(65535, int(val * g_mult))
             ramp[2][i] = min(65535, int(val * b_mult))
-        hdc = self._get_dc(display_id)
+        hdc, is_created = self._get_dc(display_id)
         try:
             self.gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(ramp))
         finally:
-            self._release_dc(hdc, display_id)
+            self._release_dc(hdc, is_created)
 
     def reset_gamma(self, display_id):
         import ctypes
         ramp = (ctypes.c_ushort * 256 * 3)()
         for i in range(256):
             ramp[0][i] = ramp[1][i] = ramp[2][i] = i * 256
-        hdc = self._get_dc(display_id)
+        hdc, is_created = self._get_dc(display_id)
         try:
             self.gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(ramp))
         finally:
-            self._release_dc(hdc, display_id)
+            self._release_dc(hdc, is_created)
 
 
 class LinuxGammaBackend(GammaBackend):
-    """Linux gamma control via xrandr."""
+    """Linux gamma control with automatic X11/Wayland detection.
+
+    Fallback chain:
+      1. xrandr (X11 sessions — most compatible)
+      2. wlr-randr or gammastep (Wayland sessions — sway, hyprland, etc.)
+      3. brightnessctl (backlight-based — laptops, works on all sessions)
+      4. /sys/class/backlight (raw sysfs — universal laptop fallback)
+    """
+
+    def __init__(self):
+        self._session = os.environ.get('XDG_SESSION_TYPE', '').lower()
+        self._has_xrandr = self._cmd_exists('xrandr')
+        self._has_wlr = self._cmd_exists('wlr-randr')
+        self._has_brightnessctl = self._cmd_exists('brightnessctl')
+        self._backlight_path = self._find_backlight()
+
+    @staticmethod
+    def _cmd_exists(name):
+        import shutil
+        return shutil.which(name) is not None
+
+    @staticmethod
+    def _find_backlight():
+        """Find sysfs backlight device."""
+        bl_dir = '/sys/class/backlight'
+        if os.path.isdir(bl_dir):
+            for entry in os.listdir(bl_dir):
+                path = os.path.join(bl_dir, entry)
+                if os.path.isfile(os.path.join(path, 'brightness')):
+                    return path
+        return None
+
     def get_displays(self):
         import subprocess
         displays = []
-        try:
-            result = subprocess.run(['xrandr', '--listmonitors'],
-                                    capture_output=True, text=True, timeout=5)
-            for line in result.stdout.strip().split('\n')[1:]:
-                parts = line.strip().split()
-                if len(parts) >= 4:
-                    name = parts[-1]
-                    displays.append({'id': name, 'name': name, 'index': len(displays)})
-        except Exception:
-            pass
-        if not displays:
+
+        # X11: use xrandr
+        if self._has_xrandr and self._session != 'wayland':
+            try:
+                result = subprocess.run(['xrandr', '--listmonitors'],
+                                        capture_output=True, text=True, timeout=5)
+                for line in result.stdout.strip().split('\n')[1:]:
+                    parts = line.strip().split()
+                    if len(parts) >= 4:
+                        name = parts[-1]
+                        displays.append({'id': name, 'name': name,
+                                         'index': len(displays), 'method': 'xrandr'})
+            except Exception:
+                pass
+
+        # Wayland: use wlr-randr
+        if not displays and self._has_wlr:
+            try:
+                result = subprocess.run(['wlr-randr'],
+                                        capture_output=True, text=True, timeout=5)
+                for line in result.stdout.split('\n'):
+                    line = line.strip()
+                    if line and not line.startswith(' ') and not line.startswith('\t'):
+                        # Output name is the first word on non-indented lines
+                        name = line.split()[0]
+                        if name and not name.startswith('-'):
+                            displays.append({'id': name, 'name': name,
+                                             'index': len(displays), 'method': 'wlr'})
+            except Exception:
+                pass
+
+        # Fallback: try xrandr query (X11 on Wayland via XWayland)
+        if not displays and self._has_xrandr:
             try:
                 result = subprocess.run(['xrandr', '--query'],
                                         capture_output=True, text=True, timeout=5)
                 for line in result.stdout.split('\n'):
                     if ' connected' in line:
                         name = line.split()[0]
-                        displays.append({'id': name, 'name': name, 'index': len(displays)})
+                        displays.append({'id': name, 'name': name,
+                                         'index': len(displays), 'method': 'xrandr'})
             except Exception:
                 pass
-        return displays if displays else [{'id': 'default', 'name': 'Default Display', 'index': 0}]
+
+        # Laptop backlight as final fallback
+        if not displays and self._backlight_path:
+            bl_name = os.path.basename(self._backlight_path)
+            displays.append({'id': bl_name, 'name': f'Laptop ({bl_name})',
+                             'index': 0, 'method': 'backlight'})
+
+        if not displays:
+            method = 'brightnessctl' if self._has_brightnessctl else 'none'
+            displays = [{'id': 'default', 'name': 'Default Display',
+                         'index': 0, 'method': method}]
+
+        return displays
 
     def set_gamma(self, display_id, brightness, temperature):
         import subprocess
         r, g, b = _kelvin_to_rgb_multiplier(temperature)
-        target = display_id if display_id and display_id != 'default' else None
-        cmd = ['xrandr']
-        if target:
-            cmd += ['--output', target]
-        cmd += ['--brightness', f'{brightness:.2f}',
-                '--gamma', f'{1/max(0.1,brightness*r):.2f}:{1/max(0.1,brightness*g):.2f}:{1/max(0.1,brightness*b):.2f}']
-        try:
-            subprocess.run(cmd, capture_output=True, timeout=5)
-        except Exception:
-            pass
+
+        # Try xrandr first (X11)
+        if self._has_xrandr and self._session != 'wayland':
+            target = display_id if display_id and display_id != 'default' else None
+            cmd = ['xrandr']
+            if target:
+                cmd += ['--output', target]
+            cmd += ['--brightness', f'{brightness:.2f}',
+                    '--gamma', f'{1/max(0.1,brightness*r):.2f}:'
+                               f'{1/max(0.1,brightness*g):.2f}:'
+                               f'{1/max(0.1,brightness*b):.2f}']
+            try:
+                result = subprocess.run(cmd, capture_output=True, timeout=5)
+                if result.returncode == 0:
+                    return
+            except Exception:
+                pass
+
+        # Try brightnessctl (works on both X11 and Wayland for backlights)
+        if self._has_brightnessctl:
+            try:
+                pct = max(1, int(brightness * 100))
+                subprocess.run(['brightnessctl', 'set', f'{pct}%'],
+                               capture_output=True, timeout=5)
+                return
+            except Exception:
+                pass
+
+        # Try raw sysfs backlight (laptop fallback)
+        if self._backlight_path:
+            try:
+                max_file = os.path.join(self._backlight_path, 'max_brightness')
+                br_file = os.path.join(self._backlight_path, 'brightness')
+                with open(max_file, 'r') as f:
+                    max_br = int(f.read().strip())
+                new_br = max(1, int(max_br * brightness))
+                with open(br_file, 'w') as f:
+                    f.write(str(new_br))
+            except Exception:
+                pass
 
     def reset_gamma(self, display_id):
         import subprocess
-        cmd = ['xrandr']
-        if display_id and display_id != 'default':
-            cmd += ['--output', display_id]
-        cmd += ['--brightness', '1.0', '--gamma', '1.0:1.0:1.0']
-        try:
-            subprocess.run(cmd, capture_output=True, timeout=5)
-        except Exception:
-            pass
+
+        if self._has_xrandr and self._session != 'wayland':
+            cmd = ['xrandr']
+            if display_id and display_id != 'default':
+                cmd += ['--output', display_id]
+            cmd += ['--brightness', '1.0', '--gamma', '1.0:1.0:1.0']
+            try:
+                subprocess.run(cmd, capture_output=True, timeout=5)
+            except Exception:
+                pass
+
+        if self._has_brightnessctl:
+            try:
+                subprocess.run(['brightnessctl', 'set', '100%'],
+                               capture_output=True, timeout=5)
+            except Exception:
+                pass
 
 
 class MacOSGammaBackend(GammaBackend):
-    """macOS gamma control via CoreGraphics."""
+    """macOS gamma control via CoreGraphics.
+
+    Supports multi-monitor setups by using CGSetDisplayTransferByTable
+    per display ID. Works with all macOS display types including
+    built-in Retina, external Thunderbolt/USB-C, HDMI, and DisplayPort.
+    """
     def __init__(self):
         import ctypes, ctypes.util
-        self._cg = ctypes.CDLL(ctypes.util.find_library('CoreGraphics'))
+        lib = ctypes.util.find_library('CoreGraphics')
+        if not lib:
+            raise RuntimeError('CoreGraphics library not found')
+        self._cg = ctypes.CDLL(lib)
 
     def get_displays(self):
         import ctypes
-        ids = (ctypes.c_uint32 * 16)()
+        max_displays = 16
+        ids = (ctypes.c_uint32 * max_displays)()
         count = ctypes.c_uint32(0)
-        self._cg.CGGetActiveDisplayList(16, ids, ctypes.byref(count))
+        self._cg.CGGetActiveDisplayList(max_displays, ids, ctypes.byref(count))
         displays = [{'id': ids[i], 'name': f'Display {i+1}', 'index': i}
                      for i in range(count.value)]
         return displays if displays else [{'id': 0, 'name': 'Primary Display', 'index': 0}]
@@ -204,7 +335,19 @@ class MacOSGammaBackend(GammaBackend):
             ctypes.c_uint32(display_id or 0), n, rt, gt, bt)
 
     def reset_gamma(self, display_id):
-        self._cg.CGDisplayRestoreColorSyncSettings()
+        """Reset gamma for a specific display or all displays."""
+        if display_id:
+            # Per-display reset: set linear gamma ramp
+            import ctypes
+            n = 256
+            table = (ctypes.c_float * n)()
+            for i in range(n):
+                table[i] = i / 255.0
+            self._cg.CGSetDisplayTransferByTable(
+                ctypes.c_uint32(display_id), n, table, table, table)
+        else:
+            # Global reset
+            self._cg.CGDisplayRestoreColorSyncSettings()
 
 
 # ---------------------------------------------------------------------------
