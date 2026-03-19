@@ -1,0 +1,11 @@
+# XLight - Cross-Platform Screen Brightness Controller
+# Core dependencies
+
+# Hardware brightness control (Windows/Linux)
+screen_brightness_control>=0.20.0
+
+# System tray support (cross-platform)
+pystray>=0.19.0
+
+# Image creation for tray icon
+Pillow>=10.0.0
