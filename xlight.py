@@ -560,16 +560,16 @@ class XLightApp:
 
         # Compact size matching Twinkle Tray
         n_displays = len(self.displays)
-        win_w = 460
-        win_h = n_displays * 90 + 44  # display cards + footer
+        win_w = 480
+        win_h = n_displays * 100 + 52  # display cards + footer
         self.root.geometry(f'{win_w}x{win_h}')
 
-        # Position bottom-right above taskbar (like Twinkle Tray)
+        # Position center of screen
         self.root.update_idletasks()
         screen_w = self.root.winfo_screenwidth()
         screen_h = self.root.winfo_screenheight()
-        x = screen_w - win_w - 16
-        y = screen_h - win_h - 60
+        x = (screen_w - win_w) // 2
+        y = (screen_h - win_h) // 2
         self.root.geometry(f'+{x}+{y}')
 
         # Remove title bar decorations for cleaner look
@@ -636,22 +636,24 @@ class XLightApp:
             tk.Label(row1, text=d['name'], bg=COLORS['bg'], fg=COLORS['text'],
                      font=('Segoe UI', 11)).pack(side=tk.LEFT)
 
-            # Row 2: Slider + Value
+            # Row 2: Slider + Value (use grid for proper sizing)
             row2 = tk.Frame(card, bg=COLORS['bg'])
-            row2.pack(fill=tk.X)
+            row2.pack(fill=tk.X, padx=(0, 4))
+            row2.columnconfigure(0, weight=1)  # slider takes remaining space
+            row2.columnconfigure(1, weight=0)  # value fixed width
+
+            # Custom canvas slider
+            canvas = tk.Canvas(row2, height=20, bg=COLORS['bg'],
+                               highlightthickness=0, cursor='hand2')
+            canvas.grid(row=0, column=0, sticky='ew', padx=(0, 4))
+            self.slider_canvases[i] = canvas
 
             # Value label on the right
             vl = tk.Label(row2, text=str(d['brightness']),
                           bg=COLORS['bg'], fg=COLORS['text'],
                           font=('Segoe UI', 14, 'bold'), width=4, anchor='e')
-            vl.pack(side=tk.RIGHT, padx=(12, 0))
+            vl.grid(row=0, column=1, sticky='e', padx=(0, 4))
             self.val_labels[i] = vl
-
-            # Custom canvas slider
-            canvas = tk.Canvas(row2, height=20, bg=COLORS['bg'],
-                               highlightthickness=0, cursor='hand2')
-            canvas.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            self.slider_canvases[i] = canvas
 
             # Store slider data
             self.sliders[i] = {
