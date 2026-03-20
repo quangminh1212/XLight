@@ -32,3 +32,10 @@ settings.json
 # Distribution
 *.spec
 *.exe
+
+# NPM
+node_modules/
+npm/python/
+npm/README.md
+npm/LICENSE
+*.tgz
