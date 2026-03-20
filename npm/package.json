@@ -1,0 +1,37 @@
+{
+  "name": "xlight",
+  "version": "1.0.0",
+  "description": "Cross-Platform Screen Brightness & Color Temperature Controller",
+  "keywords": [
+    "brightness",
+    "screen",
+    "monitor",
+    "gamma",
+    "color-temperature",
+    "display",
+    "cross-platform"
+  ],
+  "author": "XLight Team",
+  "license": "MIT",
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/quangminh1212/XLight.git"
+  },
+  "homepage": "https://github.com/quangminh1212/XLight",
+  "bugs": {
+    "url": "https://github.com/quangminh1212/XLight/issues"
+  },
+  "type": "module",
+  "bin": {
+    "xlight": "bin/xlight.js"
+  },
+  "files": [
+    "bin/",
+    "python/",
+    "README.md",
+    "LICENSE"
+  ],
+  "engines": {
+    "node": ">=16.0.0"
+  }
+}
