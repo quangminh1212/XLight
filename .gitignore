@@ -29,9 +29,12 @@ Desktop.ini
 # Config (generated at runtime)
 settings.json
 
-# Distribution
+# Distribution / Build
 *.spec
-*.exe
+build/
+build_log.txt
+do_build.bat
+build_exe.py
 
 # NPM
 node_modules/
