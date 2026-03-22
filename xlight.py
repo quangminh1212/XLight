@@ -254,7 +254,7 @@ class LinuxGammaBackend(GammaBackend):
         # Try brightnessctl (works on both X11 and Wayland for backlights)
         if self._has_brightnessctl:
             try:
-                pct = max(1, int(brightness * 100))
+                pct = max(0, int(brightness * 100))
                 subprocess.run(['brightnessctl', 'set', f'{pct}%'],
                                capture_output=True, timeout=5)
                 return
@@ -268,7 +268,7 @@ class LinuxGammaBackend(GammaBackend):
                 br_file = os.path.join(self._backlight_path, 'brightness')
                 with open(max_file, 'r') as f:
                     max_br = int(f.read().strip())
-                new_br = max(1, int(max_br * brightness))
+                new_br = max(0, int(max_br * brightness))
                 with open(br_file, 'w') as f:
                     f.write(str(new_br))
             except Exception:
@@ -415,7 +415,7 @@ class HardwareBrightnessBackend:
         if not self.available:
             return False
         try:
-            value = max(0, min(100, int(value)))
+            value = max(0, min(100, int(round(value))))
             if display_index is not None:
                 self.sbc.set_brightness(value, display=display_index)
             else:
@@ -717,7 +717,7 @@ class XLightApp:
         pad = thumb_r + 2
 
         # Slider position
-        pct = (value - 5) / 95.0  # 5-100 range
+        pct = value / 100.0  # 0-100 range
         fill_x = pad + pct * (w - 2 * pad)
 
         # Background track
@@ -736,13 +736,13 @@ class XLightApp:
                            fill=COLORS['slider_thumb'], outline='')
 
     def _slider_pos_to_value(self, x, idx):
-        """Convert canvas x position to slider value (5-100)."""
+        """Convert canvas x position to slider value (0-100)."""
         canvas = self.sliders[idx]['canvas']
         w = canvas.winfo_width()
         pad = 9
         pct = (x - pad) / max(1, w - 2 * pad)
         pct = max(0.0, min(1.0, pct))
-        return int(5 + pct * 95)
+        return int(pct * 100)
 
     def _slider_press(self, event, idx):
         self.sliders[idx]['dragging'] = True
@@ -994,7 +994,7 @@ def run_cli():
         print(f"  [{i}] {d['name']}")
     if hw.available:
         print(f"\nHardware brightness: Available")
-    print(f"\nCommands: b <5-100>, t <1000-10000>, r (reset), q (quit)")
+    print(f"\nCommands: b <0-100>, t <1000-10000>, r (reset), q (quit)")
     while True:
         try:
             cmd = input("\nXLight> ").strip()
@@ -1012,7 +1012,7 @@ def run_cli():
             print("Reset.")
         elif action == 'b' and len(parts) > 1:
             try:
-                val = max(5, min(100, int(parts[1])))
+                val = max(0, min(100, int(parts[1])))
                 for d in displays:
                     gamma.set_gamma(d['id'], val/100.0, config.get('temperature', 6500))
                 if hw.available:
@@ -1021,7 +1021,7 @@ def run_cli():
                 save_config(config)
                 print(f"Brightness: {val}%")
             except ValueError:
-                print("Invalid. Use: b <5-100>")
+                print("Invalid. Use: b <0-100>")
         elif action == 't' and len(parts) > 1:
             try:
                 val = max(1000, min(10000, int(parts[1])))
