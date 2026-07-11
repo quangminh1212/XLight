@@ -147,20 +147,26 @@ class WindowsGammaBackend(GammaBackend):
     def _channel_value(self, index, brightness, mult):
         """Compute one gamma-ramp entry compatible with Windows floor rules.
 
-        Stronger perceptual curve than a pure linear scale:
-          scale = 0.5 + 0.5 * br   (white-point always >= 50%)
-          power rises as br falls  (midtones dim hard — more noticeable)
+        Prefer linear scale so software brightness % tracks the label:
+          br >= 50% → pure linear scale (1:1 with slider)
+          br < 50%  → white-point held at 50% + extra midtone gamma
+                      (Windows rejects darker white-points)
         """
         n = index / 255.0
         br = max(self._MIN_BRIGHTNESS, min(1.0, float(brightness)))
         m = max(0.0, min(1.0, float(mult)))
 
-        # Continuous scale: br=1 → 1.0, br=0.05 → ~0.525 (always OS-safe)
-        scale = self._WP_FLOOR + (1.0 - self._WP_FLOOR) * br
-        # Midtone punch across the whole range (cap ~2.05 for drivers)
-        power = min(2.05, 1.0 + (1.0 - br) * 1.35)
+        if br >= self._WP_FLOOR:
+            # 50–100%: linear — 80% looks ~80%
+            scale = br
+            power = 1.0
+        else:
+            # Below 50%: OS floor on white-point; darken midtones only
+            scale = self._WP_FLOOR
+            t = (br - self._MIN_BRIGHTNESS) / (self._WP_FLOOR - self._MIN_BRIGHTNESS)
+            t = max(0.0, min(1.0, t))
+            power = min(2.05, 1.0 + (1.0 - t) * 1.05)
 
-        # Color mult cannot push any channel white-point below the OS floor.
         floor_m = min(1.0, self._WP_FLOOR / max(scale, 1e-6))
         m_eff = max(m, floor_m)
         return min(65535, int(round((n ** power) * scale * m_eff * 65535.0)))
@@ -1155,16 +1161,20 @@ class XLightApp:
         self._schedule_apply()
 
     def _schedule_apply(self):
-        """Snappy apply: gamma immediately, hardware slightly debounced, config later."""
-        # Gamma is free/local → apply every drag tick for instant visual feedback
+        """Apply brightness so the on-screen level matches the % label.
+
+        DDC/CI is the source of truth when available (backlight % = UI %).
+        Gamma is not stacked on top of DDC (that made 18% look like ~5%).
+        """
+        # Immediately clear gamma-dim on DDC displays so UI % is not double-dark
         self._apply_all(include_hw=False)
         if self._hw_timer is not None:
             try:
                 self.root.after_cancel(self._hw_timer)
             except Exception:
                 pass
-        # DDC/CI is ~60–120ms per monitor; coalesce during drag
-        self._hw_timer = self.root.after(90, lambda: self._apply_all(include_hw=True))
+        # Short debounce keeps DDC from flooding while still tracking the slider
+        self._hw_timer = self.root.after(40, lambda: self._apply_all(include_hw=True))
         if self._save_timer is not None:
             try:
                 self.root.after_cancel(self._save_timer)
@@ -1179,12 +1189,13 @@ class XLightApp:
         self._save_timer = None
 
     def _apply_all(self, include_hw=True):
-        """Apply brightness to all displays.
+        """Apply brightness so UI % matches real output.
 
-        Both engines stack when enabled:
-          - Hardware (DDC/CI): real backlight
-          - Gamma: strong perceptual dim (instant, works on any cable)
-        Stacking makes the slider feel responsive and dramatic.
+        Priority per display:
+          1. Hardware (DDC/CI) sets actual backlight to the labeled %
+          2. Gamma only applies color temperature when DDC succeeded
+          3. If no DDC, gamma alone dims (linear above 50%)
+        Never stack gamma-dim + DDC at the same % (double-dark mismatch).
         """
         temperature = self.config['temperature']
         use_gamma = self.config.get('use_gamma', True)
@@ -1193,18 +1204,34 @@ class XLightApp:
         for d in self.displays:
             br_pct = max(5, min(100, int(d.get('brightness', 100))))
             brightness = br_pct / 100.0
+            can_hw = (use_hw and d.get('hw_supported')
+                      and d.get('hw_index') is not None)
+            hw_ok = False
+
+            if include_hw and can_hw:
+                try:
+                    hw_ok = bool(self.hw_backend.set_brightness(br_pct, d['hw_index']))
+                    # Verify DDC actually stuck (some "Generic" monitors report support
+                    # but ignore writes — then % would not match real brightness).
+                    if hw_ok:
+                        actual = self.hw_backend.get_brightness(d['hw_index'])
+                        if actual is not None and abs(int(actual) - br_pct) > 8:
+                            hw_ok = False
+                except Exception:
+                    hw_ok = False
 
             if use_gamma:
                 try:
-                    # Always dim via gamma when enabled (not only color temp).
-                    # Combined with HW this gives a clear, strong response.
-                    self.gamma_backend.set_gamma(d['gamma_id'], brightness, temperature)
-                except Exception:
-                    pass
-
-            if include_hw and use_hw and d.get('hw_supported') and d.get('hw_index') is not None:
-                try:
-                    self.hw_backend.set_brightness(br_pct, d['hw_index'])
+                    if hw_ok:
+                        # DDC owns brightness — gamma only for color temp
+                        gamma_br = 1.0
+                    elif can_hw and not include_hw:
+                        # Waiting for DDC tick: keep gamma neutral to avoid double-dark
+                        gamma_br = 1.0
+                    else:
+                        # No reliable DDC → software dim tracks the % label
+                        gamma_br = brightness
+                    self.gamma_backend.set_gamma(d['gamma_id'], gamma_br, temperature)
                 except Exception:
                     pass
 
