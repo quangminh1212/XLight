@@ -822,11 +822,12 @@ class XLightApp:
         tk.Label(title_col, text='Brightness Control', bg=COLORS['header_bg'],
                  fg=COLORS['text_dim'], font=FONT_SMALL).pack(anchor='w')
 
-        # Header actions
+        # Header actions — Segoe MDL2 outline icons (not emoji)
         actions = tk.Frame(header_inner, bg=COLORS['header_bg'])
         actions.pack(side=tk.RIGHT)
-        self._ghost_btn(actions, '\u21BA', self._reset_all).pack(side=tk.RIGHT, padx=(4, 0))
-        self._ghost_btn(actions, '\u2699', self._show_settings).pack(side=tk.RIGHT)
+        # E72C = Refresh, E713 = Settings gear (bánh răng)
+        self._icon_btn(actions, '\uE72C', self._reset_all).pack(side=tk.RIGHT, padx=(4, 0))
+        self._icon_btn(actions, '\uE713', self._show_settings).pack(side=tk.RIGHT)
 
         # Header bottom border (teal-tinted subtle line like XLab)
         tk.Frame(outer, bg=COLORS['border'], height=1).pack(fill=tk.X)
@@ -904,12 +905,23 @@ class XLightApp:
                  fg=COLORS['primary'], font=FONT_SMALL).pack(side=tk.RIGHT, pady=12)
 
     def _ghost_btn(self, parent, text, command):
-        """XLab-style ghost icon button (teal on hover via active colors)."""
+        """XLab-style ghost text/icon button (teal on hover)."""
         return tk.Button(
             parent, text=text, command=command,
             bg=COLORS['header_bg'], fg=COLORS['text_secondary'],
             activebackground=COLORS['primary_50'], activeforeground=COLORS['primary'],
             font=('Segoe UI', 13), relief=tk.FLAT, bd=0, padx=8, pady=2,
+            cursor='hand2', highlightthickness=0,
+        )
+
+    def _icon_btn(self, parent, glyph, command):
+        """Windows outline icon (Segoe MDL2) — monochrome bánh răng / refresh, not emoji."""
+        return tk.Button(
+            parent, text=glyph, command=command,
+            bg=COLORS['header_bg'], fg=COLORS['text_secondary'],
+            activebackground=COLORS['primary_50'],
+            activeforeground=COLORS['primary'],
+            font=('Segoe MDL2 Assets', 15), relief=tk.FLAT, bd=0, padx=8, pady=2,
             cursor='hand2', highlightthickness=0,
         )
 
