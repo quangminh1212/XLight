@@ -40,7 +40,17 @@ class WindowsGammaBackend(GammaBackend):
 
     Handles multi-monitor setups with mixed monitor types (VGA, HDMI, DP, etc.)
     by creating per-display device contexts via CreateDCW.
+
+    Note: Windows Vista+ rejects gamma ramps that darken any channel below ~50%
+    of the linear identity white-point. We work around this by:
+      - linear scale for brightness 50–100%
+      - fixed 50% white-point + steeper midtone gamma for brightness <50%
+      - clamping color-temp multipliers so every channel stays accepted
     """
+
+    # Windows security floor: white-point per channel must stay >= ~50%
+    _WP_FLOOR = 0.5
+    _MIN_BRIGHTNESS = 0.05
 
     def __init__(self):
         import ctypes
@@ -51,8 +61,9 @@ class WindowsGammaBackend(GammaBackend):
     def _get_dc(self, display_name=None):
         """Get device context for a specific display.
 
-        Returns (hdc, is_created_dc) tuple. is_created_dc=True means
-        caller must use DeleteDC; False means use ReleaseDC.
+        Prefer CreateDCW(device_name) — GetDC(0) often fails with
+        SetDeviceGammaRamp on multi-GPU / multi-monitor systems.
+        Returns (hdc, is_created_dc).
         """
         if display_name:
             try:
@@ -61,10 +72,22 @@ class WindowsGammaBackend(GammaBackend):
                     return hdc, True
             except Exception:
                 pass
-        return self.user32.GetDC(0), False
+        # Fallback: first active display via CreateDCW (not GetDC — unreliable)
+        for d in self.get_displays():
+            if d.get('id'):
+                try:
+                    hdc = self.gdi32.CreateDCW(d['id'], None, None, None)
+                    if hdc:
+                        return hdc, True
+                except Exception:
+                    pass
+        hdc = self.user32.GetDC(0)
+        return hdc, False
 
     def _release_dc(self, hdc, is_created_dc):
         """Release DC using the correct method based on how it was obtained."""
+        if not hdc:
+            return
         if is_created_dc:
             self.gdi32.DeleteDC(hdc)
         else:
@@ -75,6 +98,7 @@ class WindowsGammaBackend(GammaBackend):
 
         Uses EnumDisplayDevicesW which detects ALL connected monitors
         regardless of connection type (VGA, DVI, HDMI, DP, USB-C, etc.).
+        Prefers the attached monitor's friendly name over the adapter string.
         """
         displays = []
         try:
@@ -95,9 +119,24 @@ class WindowsGammaBackend(GammaBackend):
             i = 0
             while self.user32.EnumDisplayDevicesW(None, i, ctypes.byref(dd), 0):
                 if dd.StateFlags & DISPLAY_DEVICE_ACTIVE:
+                    adapter_name = dd.DeviceName.rstrip('\x00')
+                    adapter_str = dd.DeviceString.rstrip('\x00')
+                    # Prefer attached monitor friendly name
+                    mon_name = adapter_str
+                    try:
+                        md = DISPLAY_DEVICE()
+                        md.cb = ctypes.sizeof(md)
+                        if self.user32.EnumDisplayDevicesW(adapter_name, 0, ctypes.byref(md), 0):
+                            mstr = md.DeviceString.rstrip('\x00')
+                            if mstr and mstr.lower() not in ('', 'generic pnp monitor'):
+                                mon_name = mstr
+                            elif mstr:
+                                mon_name = mstr
+                    except Exception:
+                        pass
                     displays.append({
-                        'id': dd.DeviceName.rstrip('\x00'),
-                        'name': dd.DeviceString.rstrip('\x00'),
+                        'id': adapter_name,
+                        'name': mon_name or adapter_str or f'Display {len(displays)+1}',
                         'index': len(displays),
                     })
                 i += 1
@@ -105,23 +144,52 @@ class WindowsGammaBackend(GammaBackend):
             displays = [{'id': None, 'name': 'Primary Display', 'index': 0}]
         return displays if displays else [{'id': None, 'name': 'Primary Display', 'index': 0}]
 
+    def _channel_value(self, index, brightness, mult):
+        """Compute one gamma-ramp entry compatible with Windows floor rules."""
+        n = index / 255.0
+        br = max(self._MIN_BRIGHTNESS, min(1.0, float(brightness)))
+        m = max(0.0, min(1.0, float(mult)))
+
+        if br >= self._WP_FLOOR:
+            scale = br
+            power = 1.0
+        else:
+            # Keep white-point at 50%; darken midtones with extra gamma.
+            # Driver limit ~power 2.1 at scale 0.5 — cap at 2.05 for safety.
+            scale = self._WP_FLOOR
+            t = (br - self._MIN_BRIGHTNESS) / (self._WP_FLOOR - self._MIN_BRIGHTNESS)
+            t = max(0.0, min(1.0, t))
+            power = min(2.05, 1.0 + (1.0 - t) * 1.05)
+
+        # Color mult cannot push any channel white-point below the OS floor.
+        floor_m = min(1.0, self._WP_FLOOR / scale)
+        m_eff = max(m, floor_m)
+        return min(65535, int(round((n ** power) * scale * m_eff * 65535.0)))
+
+    def _build_ramp(self, brightness, temperature):
+        import ctypes
+        ramp = (ctypes.c_ushort * 256 * 3)()
+        r_mult, g_mult, b_mult = _kelvin_to_rgb_multiplier(temperature)
+        for i in range(256):
+            ramp[0][i] = self._channel_value(i, brightness, r_mult)
+            ramp[1][i] = self._channel_value(i, brightness, g_mult)
+            ramp[2][i] = self._channel_value(i, brightness, b_mult)
+        return ramp
+
     def set_gamma(self, display_id, brightness, temperature):
         """Set gamma ramp for a specific display.
 
         Works per-monitor even with mixed cable types because gamma
         ramp is set through the display adapter's device context.
+        Returns True if the OS accepted the ramp.
         """
         import ctypes
-        ramp = (ctypes.c_ushort * 256 * 3)()
-        r_mult, g_mult, b_mult = _kelvin_to_rgb_multiplier(temperature)
-        for i in range(256):
-            val = int(i * 256 * brightness)
-            ramp[0][i] = min(65535, int(val * r_mult))
-            ramp[1][i] = min(65535, int(val * g_mult))
-            ramp[2][i] = min(65535, int(val * b_mult))
+        ramp = self._build_ramp(brightness, temperature)
         hdc, is_created = self._get_dc(display_id)
         try:
-            self.gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(ramp))
+            if not hdc:
+                return False
+            return bool(self.gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(ramp)))
         finally:
             self._release_dc(hdc, is_created)
 
@@ -129,10 +197,13 @@ class WindowsGammaBackend(GammaBackend):
         import ctypes
         ramp = (ctypes.c_ushort * 256 * 3)()
         for i in range(256):
+            # Identity: i*256 is accepted; also matches historical GDI convention
             ramp[0][i] = ramp[1][i] = ramp[2][i] = i * 256
         hdc, is_created = self._get_dc(display_id)
         try:
-            self.gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(ramp))
+            if not hdc:
+                return False
+            return bool(self.gdi32.SetDeviceGammaRamp(hdc, ctypes.byref(ramp)))
         finally:
             self._release_dc(hdc, is_created)
 
@@ -592,24 +663,42 @@ class XLightApp:
     def _refresh_displays(self):
         gamma_displays = self.gamma_backend.get_displays()
         hw_displays = self.hw_backend.get_displays() if self.hw_backend.available else []
+        cfg_br = max(5, min(100, int(self.config.get('brightness', 100))))
         self.displays = []
+        used_hw = set()
         for gd in gamma_displays:
             info = {
                 'id': gd['id'], 'name': gd.get('name', f"Display {gd['index']+1}"),
                 'index': gd['index'], 'gamma_id': gd['id'],
                 'hw_index': None, 'hw_supported': False,
-                'brightness': self.config.get('brightness', 100),
+                'brightness': cfg_br,
             }
+            # Prefer index match; fall back to first unused HW monitor
+            matched = None
             for hd in hw_displays:
-                if hd['index'] == gd['index']:
-                    info['hw_index'] = hd['index']
-                    info['hw_supported'] = True
-                    hw_name = hd.get('name', '')
-                    if hw_name:
-                        hw_name = hw_name.replace('None ', '').strip()
-                        if hw_name and hw_name.lower() != 'none':
-                            info['name'] = hw_name
+                if hd['index'] == gd['index'] and hd['index'] not in used_hw:
+                    matched = hd
                     break
+            if matched is None:
+                for hd in hw_displays:
+                    if hd['index'] not in used_hw:
+                        matched = hd
+                        break
+            if matched is not None:
+                used_hw.add(matched['index'])
+                info['hw_index'] = matched['index']
+                info['hw_supported'] = True
+                hw_name = (matched.get('name') or '').replace('None ', '').strip()
+                if hw_name and hw_name.lower() not in ('none', 'generic pnp monitor',
+                                                       'generic monitor'):
+                    info['name'] = hw_name
+                # Prefer live hardware brightness when available
+                try:
+                    cur = self.hw_backend.get_brightness(matched['index'])
+                    if cur is not None:
+                        info['brightness'] = max(5, min(100, int(cur)))
+                except Exception:
+                    pass
             self.displays.append(info)
 
     def _build_ui(self):
@@ -716,8 +805,8 @@ class XLightApp:
         thumb_r = 7
         pad = thumb_r + 2
 
-        # Slider position
-        pct = value / 100.0  # 0-100 range
+        # Slider position (value range 5–100)
+        pct = (max(5, min(100, value)) - 5) / 95.0
         fill_x = pad + pct * (w - 2 * pad)
 
         # Background track
@@ -736,13 +825,17 @@ class XLightApp:
                            fill=COLORS['slider_thumb'], outline='')
 
     def _slider_pos_to_value(self, x, idx):
-        """Convert canvas x position to slider value (0-100)."""
+        """Convert canvas x position to slider value (5-100).
+
+        Windows gamma cannot go fully black; 5% is the practical minimum
+        and matches the documented UI range.
+        """
         canvas = self.sliders[idx]['canvas']
         w = canvas.winfo_width()
         pad = 9
         pct = (x - pad) / max(1, w - 2 * pad)
         pct = max(0.0, min(1.0, pct))
-        return int(pct * 100)
+        return int(round(5 + pct * 95))
 
     def _slider_press(self, event, idx):
         self.sliders[idx]['dragging'] = True
@@ -759,6 +852,7 @@ class XLightApp:
 
     def _update_slider(self, idx, val):
         """Update slider value, label, and trigger brightness change."""
+        val = max(5, min(100, int(val)))
         self.sliders[idx]['value'] = val
         self.val_labels[idx].config(text=str(val))
         self.displays[idx]['brightness'] = val
@@ -853,6 +947,13 @@ class XLightApp:
     def _on_mode(self):
         self.config['use_gamma'] = self.use_gamma.get()
         self.config['use_hardware'] = self.use_hw.get()
+        # Turning gamma off must restore identity ramp (color temp lingers otherwise)
+        if not self.config['use_gamma']:
+            for d in self.displays:
+                try:
+                    self.gamma_backend.reset_gamma(d['gamma_id'])
+                except Exception:
+                    pass
         self._apply_all()
 
     def _debounce(self):
@@ -866,19 +967,28 @@ class XLightApp:
         use_hw = self.config.get('use_hardware', True)
 
         for d in self.displays:
-            brightness = d.get('brightness', 100) / 100.0
-            if use_gamma:
-                try:
-                    self.gamma_backend.set_gamma(d['gamma_id'], brightness, temperature)
-                except Exception:
-                    pass
+            br_pct = max(5, min(100, int(d.get('brightness', 100))))
+            brightness = br_pct / 100.0
+            hw_ok = False
             if use_hw and d.get('hw_supported') and d.get('hw_index') is not None:
                 try:
-                    self.hw_backend.set_brightness(int(brightness * 100), d['hw_index'])
+                    hw_ok = bool(self.hw_backend.set_brightness(br_pct, d['hw_index']))
+                except Exception:
+                    hw_ok = False
+            if use_gamma:
+                try:
+                    # Avoid double-dimming: when DDC/CI already set backlight,
+                    # gamma only applies color temperature (brightness factor 1.0).
+                    gamma_br = 1.0 if hw_ok else brightness
+                    self.gamma_backend.set_gamma(d['gamma_id'], gamma_br, temperature)
                 except Exception:
                     pass
+            elif hw_ok:
+                # Gamma off but was previously applied — restore neutral ramp
+                # so color temp from a prior session does not linger.
+                pass
 
-        # Update config with average brightness
+        # Update config with first display brightness (primary)
         if self.displays:
             self.config['brightness'] = self.displays[0]['brightness']
         save_config(self.config)
@@ -888,13 +998,24 @@ class XLightApp:
         if name not in profiles:
             return
         p = profiles[name]
-        b = p.get('brightness', 100)
-        t_val = p.get('temperature', 6500)
+        b = max(5, min(100, int(p.get('brightness', 100))))
+        t_val = int(p.get('temperature', 6500))
+        self.config['temperature'] = t_val
+        if hasattr(self, 'temp_var'):
+            try:
+                self.temp_var.set(t_val)
+            except Exception:
+                pass
+            if hasattr(self, 'temp_label'):
+                try:
+                    self.temp_label.config(text=f'{t_val}K')
+                except Exception:
+                    pass
         for i in range(len(self.displays)):
             self._update_slider(i, b)
-        if hasattr(self, 'temp_var'):
-            self.temp_var.set(t_val)
-            self._on_temp(str(t_val))
+        # Ensure apply even if sliders did not change (same brightness, new temp)
+        if not self._building:
+            self._debounce()
 
     def _save_profile(self):
         name = simpledialog.askstring(t('save_profile', self.lang),
@@ -911,18 +1032,31 @@ class XLightApp:
             save_config(self.config)
 
     def _reset_all(self):
+        self.config['brightness'] = 100
+        self.config['temperature'] = 6500
+        if hasattr(self, 'temp_var'):
+            try:
+                self.temp_var.set(6500)
+            except Exception:
+                pass
+            if hasattr(self, 'temp_label'):
+                try:
+                    self.temp_label.config(text='6500K')
+                except Exception:
+                    pass
         for i in range(len(self.displays)):
             self._update_slider(i, 100)
-        if hasattr(self, 'temp_var'):
-            self.temp_var.set(6500)
-            self._on_temp('6500')
         for d in self.displays:
             try:
                 self.gamma_backend.reset_gamma(d['gamma_id'])
             except Exception:
                 pass
-        self.config['brightness'] = 100
-        self.config['temperature'] = 6500
+            if (self.config.get('use_hardware', True)
+                    and d.get('hw_supported') and d.get('hw_index') is not None):
+                try:
+                    self.hw_backend.set_brightness(100, d['hw_index'])
+                except Exception:
+                    pass
         save_config(self.config)
 
     def _on_close(self):

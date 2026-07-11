@@ -107,13 +107,20 @@ def run_tests():
         print(f"TEST 8 - GUI creation: FAIL ({e})", flush=True)
         failed += 1
 
-    # Test 9: Gamma set/reset
+    # Test 9: Gamma set/reset (including low brightness + warm temp — Windows floor)
     try:
         for d in app.displays:
-            g.set_gamma(d["gamma_id"], 0.8, 5000)
+            ok_hi = g.set_gamma(d["gamma_id"], 0.8, 5000)
+            ok_lo = g.set_gamma(d["gamma_id"], 0.15, 3200)
+            ok_mid = g.set_gamma(d["gamma_id"], 0.5, 6500)
+            # On Windows these must succeed; other platforms return None/True
+            if ok_hi is False or ok_lo is False or ok_mid is False:
+                raise AssertionError(
+                    f"set_gamma rejected ramp (hi={ok_hi}, lo={ok_lo}, mid={ok_mid})"
+                )
         for d in app.displays:
             g.reset_gamma(d["gamma_id"])
-        print(f"TEST 9 - Gamma set/reset: OK - PASS", flush=True)
+        print(f"TEST 9 - Gamma set/reset (incl. low/warm): OK - PASS", flush=True)
         passed += 1
     except Exception as e:
         print(f"TEST 9 - Gamma set/reset: FAIL ({e})", flush=True)
