@@ -813,20 +813,10 @@ class XLightApp:
                 logo_img = logo_img.resize((w, h), Image.Resampling.LANCZOS)
                 self._logo_photo = ImageTk.PhotoImage(logo_img)
                 tk.Label(brand, image=self._logo_photo, bg=COLORS['header_bg']).pack(
-                    side=tk.LEFT, padx=(0, 10))
+                    side=tk.LEFT)
         except Exception:
             tk.Label(brand, text='XLab', bg=COLORS['header_bg'], fg=COLORS['primary'],
-                     font=FONT_TITLE).pack(side=tk.LEFT, padx=(0, 8))
-
-        # Vertical divider + product name
-        tk.Frame(brand, bg=COLORS['border'], width=1).pack(side=tk.LEFT, fill=tk.Y,
-                                                          padx=(0, 10), pady=4)
-        title_col = tk.Frame(brand, bg=COLORS['header_bg'])
-        title_col.pack(side=tk.LEFT)
-        tk.Label(title_col, text='XLight', bg=COLORS['header_bg'], fg=COLORS['text'],
-                 font=FONT_TITLE).pack(anchor='w')
-        tk.Label(title_col, text='Brightness Control', bg=COLORS['header_bg'],
-                 fg=COLORS['text_dim'], font=FONT_SMALL).pack(anchor='w')
+                     font=FONT_TITLE).pack(side=tk.LEFT)
 
         # Header actions — Segoe MDL2 outline icons (not emoji)
         actions = tk.Frame(header_inner, bg=COLORS['header_bg'])
