@@ -611,6 +611,30 @@ COLORS = {
 }
 
 
+def create_brightness_icon(size=64):
+    """Standard sun/brightness icon (same metaphor as Windows Display settings)."""
+    from PIL import Image, ImageDraw
+    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(img)
+    cx = cy = size / 2.0
+    # Warm yellow used by common brightness UI
+    sun = (255, 185, 0, 255)
+    sun_core = (255, 204, 0, 255)
+    ray_w = max(2, size // 14)
+    outer = size * 0.44
+    inner = size * 0.30
+    for angle in range(0, 360, 45):
+        rad = math.radians(angle)
+        x1 = cx + inner * math.cos(rad)
+        y1 = cy + inner * math.sin(rad)
+        x2 = cx + outer * math.cos(rad)
+        y2 = cy + outer * math.sin(rad)
+        draw.line([(x1, y1), (x2, y2)], fill=sun, width=ray_w)
+    r = size * 0.20
+    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=sun_core, outline=sun)
+    return img
+
+
 class XLightApp:
     """Compact brightness controller - Twinkle Tray style."""
 
@@ -646,12 +670,7 @@ class XLightApp:
         # Remove title bar decorations for cleaner look
         self.root.overrideredirect(False)
 
-        try:
-            icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.ico')
-            if os.path.exists(icon_path):
-                self.root.iconbitmap(icon_path)
-        except Exception:
-            pass
+        self._set_window_icon()
 
         self.root.protocol('WM_DELETE_WINDOW', self._on_close)
 
@@ -719,7 +738,8 @@ class XLightApp:
             row1 = tk.Frame(card, bg=COLORS['bg'])
             row1.pack(fill=tk.X, pady=(0, 6))
 
-            tk.Label(row1, text='\U0001F5B5', bg=COLORS['bg'], fg=COLORS['text_dim'],
+            # Common brightness glyph (sun) — matches tray/window icon metaphor
+            tk.Label(row1, text='\u2600', bg=COLORS['bg'], fg='#ffb900',
                      font=('Segoe UI', 13)).pack(side=tk.LEFT, padx=(0, 8))
 
             tk.Label(row1, text=d['name'], bg=COLORS['bg'], fg=COLORS['text'],
@@ -1080,21 +1100,28 @@ class XLightApp:
         self.root.quit()
         self.root.destroy()
 
-    # ── System Tray ──
+    # ── Icons / System Tray ──
+
+    def _set_window_icon(self):
+        """Apply standard sun brightness icon to the window title bar."""
+        try:
+            from PIL import ImageTk
+            img = create_brightness_icon(32)
+            self._icon_photo = ImageTk.PhotoImage(img)
+            self.root.iconphoto(True, self._icon_photo)
+        except Exception:
+            try:
+                icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.ico')
+                if os.path.exists(icon_path):
+                    self.root.iconbitmap(icon_path)
+            except Exception:
+                pass
 
     def _setup_tray(self):
         self._tray_icon = None
         try:
             import pystray
-            from PIL import Image, ImageDraw
-            img = Image.new('RGBA', (64, 64), (0, 0, 0, 0))
-            draw = ImageDraw.Draw(img)
-            draw.ellipse([16, 16, 48, 48], fill=(124, 106, 239, 255))
-            for angle in range(0, 360, 45):
-                rad = math.radians(angle)
-                x1, y1 = 32 + 18*math.cos(rad), 32 + 18*math.sin(rad)
-                x2, y2 = 32 + 28*math.cos(rad), 32 + 28*math.sin(rad)
-                draw.line([(x1,y1),(x2,y2)], fill=(124,106,239,200), width=3)
+            img = create_brightness_icon(64)
             menu = pystray.Menu(
                 pystray.MenuItem(t('show', self.lang),
                                  lambda: self.root.after(0, self.root.deiconify)),
