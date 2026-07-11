@@ -701,7 +701,6 @@ class XLightApp:
         self._building = True
         self._logo_photo = None
         self._icon_photo = None
-        self._master_sync = False  # prevent master↔per-display feedback loops
 
         self._refresh_displays()
 
@@ -710,10 +709,10 @@ class XLightApp:
         self.root.configure(bg=COLORS['bg_secondary'])
         self.root.resizable(False, False)
 
-        # Header + master card + per-display cards + footer
+        # Header + per-display cards + footer
         n_displays = len(self.displays)
         win_w = 480
-        win_h = 56 + 118 + n_displays * 108 + 48
+        win_h = 56 + n_displays * 108 + 48
         self.root.geometry(f'{win_w}x{win_h}')
 
         self.root.update_idletasks()
@@ -837,56 +836,6 @@ class XLightApp:
         main = tk.Frame(outer, bg=COLORS['bg_secondary'])
         main.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
 
-        # Master control + quick presets (strong, one-shot dimming)
-        master_wrap = tk.Frame(main, bg=COLORS['border'], padx=1, pady=1)
-        master_wrap.pack(fill=tk.X, pady=(0, 12))
-        master = tk.Frame(master_wrap, bg=COLORS['card_bg'])
-        master.pack(fill=tk.BOTH, expand=True)
-        mpad = tk.Frame(master, bg=COLORS['card_bg'])
-        mpad.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
-
-        mrow1 = tk.Frame(mpad, bg=COLORS['card_bg'])
-        mrow1.pack(fill=tk.X, pady=(0, 8))
-        tk.Label(mrow1, text='ALL DISPLAYS', bg=COLORS['card_bg'],
-                 fg=COLORS['primary'], font=FONT_SMALL).pack(side=tk.LEFT)
-        avg0 = sum(d['brightness'] for d in self.displays) // max(1, len(self.displays))
-        self.master_badge = tk.Label(
-            mrow1, text=f'  {avg0}%  ',
-            bg=COLORS['primary'], fg=COLORS['white'], font=FONT_UI_BOLD,
-        )
-        self.master_badge.pack(side=tk.RIGHT)
-
-        mrow2 = tk.Frame(mpad, bg=COLORS['card_bg'])
-        mrow2.pack(fill=tk.X)
-        mrow2.columnconfigure(0, weight=1)
-        self.master_canvas = tk.Canvas(mrow2, height=26, bg=COLORS['card_bg'],
-                                       highlightthickness=0, cursor='hand2')
-        self.master_canvas.grid(row=0, column=0, sticky='ew')
-        self.sliders['master'] = {
-            'canvas': self.master_canvas,
-            'value': avg0,
-            'dragging': False,
-        }
-        self.master_canvas.bind('<Configure>', lambda e: self._draw_slider('master'))
-        self.master_canvas.bind('<Button-1>', lambda e: self._master_press(e))
-        self.master_canvas.bind('<B1-Motion>', lambda e: self._master_drag(e))
-        self.master_canvas.bind('<ButtonRelease-1>', lambda e: self._master_release(e))
-
-        # Quick presets
-        presets = tk.Frame(mpad, bg=COLORS['card_bg'])
-        presets.pack(fill=tk.X, pady=(10, 0))
-        tk.Label(presets, text='Quick', bg=COLORS['card_bg'], fg=COLORS['text_dim'],
-                 font=FONT_SMALL).pack(side=tk.LEFT, padx=(0, 8))
-        for pct in (20, 40, 60, 80, 100):
-            b = tk.Button(
-                presets, text=f'{pct}%', command=lambda p=pct: self._set_all_brightness(p),
-                bg=COLORS['primary_50'], fg=COLORS['primary_600'],
-                activebackground=COLORS['primary'], activeforeground=COLORS['white'],
-                font=FONT_SMALL, relief=tk.FLAT, bd=0, padx=10, pady=4,
-                cursor='hand2', highlightthickness=0,
-            )
-            b.pack(side=tk.LEFT, padx=3)
-
         for i, d in enumerate(self.displays):
             # Card: white surface, gray border (XLab card)
             card_wrap = tk.Frame(main, bg=COLORS['border'], padx=1, pady=1)
@@ -948,7 +897,7 @@ class XLightApp:
 
         foot_inner = tk.Frame(footer, bg=COLORS['footer_bg'])
         foot_inner.pack(fill=tk.BOTH, expand=True, padx=16)
-        tk.Label(foot_inner, text='XLab  ·  Gamma + DDC stacked for stronger dim',
+        tk.Label(foot_inner, text='XLab  ·  Adjust brightness per display',
                  bg=COLORS['footer_bg'], fg=COLORS['text_dim'],
                  font=FONT_SMALL).pack(side=tk.LEFT, pady=12)
         tk.Label(foot_inner, text='5–100%', bg=COLORS['footer_bg'],
@@ -985,7 +934,7 @@ class XLightApp:
         )
 
     def _draw_slider(self, idx):
-        """Draw XLab teal slider track + thumb (idx is int or 'master')."""
+        """Draw XLab teal slider track + thumb."""
         if idx not in self.sliders:
             return
         canvas = self.sliders[idx]['canvas']
@@ -997,10 +946,9 @@ class XLightApp:
         if w <= 1:
             return
 
-        is_master = idx == 'master'
-        track_h = 8 if is_master else 6
+        track_h = 6
         track_y = h // 2
-        thumb_r = 9 if is_master else 8
+        thumb_r = 8
         pad = thumb_r + 2
 
         # value range 5–100
@@ -1023,7 +971,7 @@ class XLightApp:
         """Convert canvas x position to slider value (5-100)."""
         canvas = self.sliders[idx]['canvas']
         w = canvas.winfo_width()
-        pad = 11 if idx == 'master' else 9
+        pad = 9
         pct = (x - pad) / max(1, w - 2 * pad)
         pct = max(0.0, min(1.0, pct))
         return int(round(5 + pct * 95))
@@ -1044,61 +992,16 @@ class XLightApp:
         if not self._building:
             self._apply_all(include_hw=True)
 
-    def _master_press(self, event):
-        self.sliders['master']['dragging'] = True
-        self._set_all_brightness(self._slider_pos_to_value(event.x, 'master'))
-
-    def _master_drag(self, event):
-        if self.sliders.get('master', {}).get('dragging'):
-            self._set_all_brightness(self._slider_pos_to_value(event.x, 'master'))
-
-    def _master_release(self, event):
-        if 'master' in self.sliders:
-            self.sliders['master']['dragging'] = False
-        if not self._building:
-            self._apply_all(include_hw=True)
-
-    def _set_all_brightness(self, val):
-        """Set every display (+ master) to the same brightness."""
-        val = max(5, min(100, int(val)))
-        self._master_sync = True
-        try:
-            if 'master' in self.sliders:
-                self.sliders['master']['value'] = val
-                self._draw_slider('master')
-            if hasattr(self, 'master_badge'):
-                self.master_badge.config(text=f'  {val}%  ')
-            for i in range(len(self.displays)):
-                self._update_slider(i, val, from_master=True)
-        finally:
-            self._master_sync = False
-        if not self._building:
-            self._schedule_apply()
-
-    def _sync_master_from_displays(self):
-        if self._master_sync or 'master' not in self.sliders:
-            return
-        avg = sum(d['brightness'] for d in self.displays) // max(1, len(self.displays))
-        self.sliders['master']['value'] = avg
-        self._draw_slider('master')
-        if hasattr(self, 'master_badge'):
-            self.master_badge.config(text=f'  {avg}%  ')
-
-    def _update_slider(self, idx, val, from_master=False):
+    def _update_slider(self, idx, val):
         """Update slider value, label, and trigger brightness change."""
-        if idx == 'master':
-            self._set_all_brightness(val)
-            return
         val = max(5, min(100, int(val)))
         self.sliders[idx]['value'] = val
         if idx in self.val_labels:
             self.val_labels[idx].config(text=f'  {val}%  ')
         self.displays[idx]['brightness'] = val
         self._draw_slider(idx)
-        if not from_master:
-            self._sync_master_from_displays()
-            if not self._building:
-                self._schedule_apply()
+        if not self._building:
+            self._schedule_apply()
 
     def _section_label(self, parent, text):
         tk.Label(parent, text=text.upper(), bg=COLORS['bg'], fg=COLORS['primary'],
@@ -1347,7 +1250,8 @@ class XLightApp:
                     self.temp_label.config(text='6500K')
                 except Exception:
                     pass
-        self._set_all_brightness(100)
+        for i in range(len(self.displays)):
+            self._update_slider(i, 100)
         for d in self.displays:
             try:
                 self.gamma_backend.reset_gamma(d['gamma_id'])
