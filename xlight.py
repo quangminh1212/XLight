@@ -611,28 +611,57 @@ COLORS = {
 }
 
 
-def create_brightness_icon(size=64):
-    """Standard sun/brightness icon (same metaphor as Windows Display settings)."""
+def _app_dir():
+    return os.path.dirname(os.path.abspath(__file__))
+
+
+def _logo_path():
+    return os.path.join(_app_dir(), 'logo.png')
+
+
+def _icon_ico_path():
+    return os.path.join(_app_dir(), 'icon.ico')
+
+
+def create_app_icon(size=64):
+    """Build square tray/window icon from XLab Web logo.png.
+
+    Wide wordmark is letterboxed on a white rounded plate so it stays
+    readable on dark Windows taskbars.
+    """
     from PIL import Image, ImageDraw
-    img = Image.new('RGBA', (size, size), (0, 0, 0, 0))
-    draw = ImageDraw.Draw(img)
-    cx = cy = size / 2.0
-    # Warm yellow used by common brightness UI
-    sun = (255, 185, 0, 255)
-    sun_core = (255, 204, 0, 255)
-    ray_w = max(2, size // 14)
-    outer = size * 0.44
-    inner = size * 0.30
-    for angle in range(0, 360, 45):
-        rad = math.radians(angle)
-        x1 = cx + inner * math.cos(rad)
-        y1 = cy + inner * math.sin(rad)
-        x2 = cx + outer * math.cos(rad)
-        y2 = cy + outer * math.sin(rad)
-        draw.line([(x1, y1), (x2, y2)], fill=sun, width=ray_w)
-    r = size * 0.20
-    draw.ellipse([cx - r, cy - r, cx + r, cy + r], fill=sun_core, outline=sun)
-    return img
+
+    logo_file = _logo_path()
+    if not os.path.isfile(logo_file):
+        # Minimal fallback if asset is missing
+        img = Image.new('RGBA', (size, size), (0, 161, 154, 255))
+        return img
+
+    logo = Image.open(logo_file).convert('RGBA')
+    bbox = logo.getbbox()
+    if bbox:
+        logo = logo.crop(bbox)
+
+    canvas = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    plate = Image.new('RGBA', (size, size), (0, 0, 0, 0))
+    draw = ImageDraw.Draw(plate)
+    radius = max(2, size // 6)
+    draw.rounded_rectangle([0, 0, size - 1, size - 1], radius=radius,
+                           fill=(255, 255, 255, 255))
+    canvas.alpha_composite(plate)
+
+    pad = 0.12
+    max_w = int(size * (1 - 2 * pad))
+    max_h = int(size * (1 - 2 * pad))
+    lw, lh = logo.size
+    scale = min(max_w / max(1, lw), max_h / max(1, lh))
+    nw = max(1, int(lw * scale))
+    nh = max(1, int(lh * scale))
+    resized = logo.resize((nw, nh), Image.Resampling.LANCZOS)
+    x = (size - nw) // 2
+    y = (size - nh) // 2
+    canvas.paste(resized, (x, y), resized)
+    return canvas
 
 
 class XLightApp:
@@ -738,9 +767,9 @@ class XLightApp:
             row1 = tk.Frame(card, bg=COLORS['bg'])
             row1.pack(fill=tk.X, pady=(0, 6))
 
-            # Common brightness glyph (sun) — matches tray/window icon metaphor
-            tk.Label(row1, text='\u2600', bg=COLORS['bg'], fg='#ffb900',
-                     font=('Segoe UI', 13)).pack(side=tk.LEFT, padx=(0, 8))
+            # Display row marker (XLab teal accent)
+            tk.Label(row1, text='\u25A0', bg=COLORS['bg'], fg='#00A19A',
+                     font=('Segoe UI', 11)).pack(side=tk.LEFT, padx=(0, 8))
 
             tk.Label(row1, text=d['name'], bg=COLORS['bg'], fg=COLORS['text'],
                      font=('Segoe UI', 11)).pack(side=tk.LEFT)
@@ -1100,28 +1129,31 @@ class XLightApp:
         self.root.quit()
         self.root.destroy()
 
-    # ── Icons / System Tray ──
+    # ── Icons / System Tray (XLab Web logo) ──
 
     def _set_window_icon(self):
-        """Apply standard sun brightness icon to the window title bar."""
+        """Apply XLab logo to the window title bar (.ico preferred on Windows)."""
+        ico = _icon_ico_path()
+        try:
+            if os.path.isfile(ico):
+                self.root.iconbitmap(ico)
+                return
+        except Exception:
+            pass
         try:
             from PIL import ImageTk
-            img = create_brightness_icon(32)
+            img = create_app_icon(32)
             self._icon_photo = ImageTk.PhotoImage(img)
             self.root.iconphoto(True, self._icon_photo)
         except Exception:
-            try:
-                icon_path = os.path.join(os.path.dirname(os.path.abspath(__file__)), 'icon.ico')
-                if os.path.exists(icon_path):
-                    self.root.iconbitmap(icon_path)
-            except Exception:
-                pass
+            pass
 
     def _setup_tray(self):
+        """System tray icon using XLab Web logo."""
         self._tray_icon = None
         try:
             import pystray
-            img = create_brightness_icon(64)
+            img = create_app_icon(64)
             menu = pystray.Menu(
                 pystray.MenuItem(t('show', self.lang),
                                  lambda: self.root.after(0, self.root.deiconify)),

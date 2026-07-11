@@ -22,6 +22,8 @@ mkdirSync(PYTHON_DIR, { recursive: true });
 const files = [
   { src: "xlight.py", dest: "xlight.py" },
   { src: "requirements.txt", dest: "requirements.txt" },
+  { src: "logo.png", dest: "logo.png" },
+  { src: "icon.ico", dest: "icon.ico" },
 ];
 
 let copied = 0;
