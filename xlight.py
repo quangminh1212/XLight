@@ -145,24 +145,23 @@ class WindowsGammaBackend(GammaBackend):
         return displays if displays else [{'id': None, 'name': 'Primary Display', 'index': 0}]
 
     def _channel_value(self, index, brightness, mult):
-        """Compute one gamma-ramp entry compatible with Windows floor rules."""
+        """Compute one gamma-ramp entry compatible with Windows floor rules.
+
+        Stronger perceptual curve than a pure linear scale:
+          scale = 0.5 + 0.5 * br   (white-point always >= 50%)
+          power rises as br falls  (midtones dim hard — more noticeable)
+        """
         n = index / 255.0
         br = max(self._MIN_BRIGHTNESS, min(1.0, float(brightness)))
         m = max(0.0, min(1.0, float(mult)))
 
-        if br >= self._WP_FLOOR:
-            scale = br
-            power = 1.0
-        else:
-            # Keep white-point at 50%; darken midtones with extra gamma.
-            # Driver limit ~power 2.1 at scale 0.5 — cap at 2.05 for safety.
-            scale = self._WP_FLOOR
-            t = (br - self._MIN_BRIGHTNESS) / (self._WP_FLOOR - self._MIN_BRIGHTNESS)
-            t = max(0.0, min(1.0, t))
-            power = min(2.05, 1.0 + (1.0 - t) * 1.05)
+        # Continuous scale: br=1 → 1.0, br=0.05 → ~0.525 (always OS-safe)
+        scale = self._WP_FLOOR + (1.0 - self._WP_FLOOR) * br
+        # Midtone punch across the whole range (cap ~2.05 for drivers)
+        power = min(2.05, 1.0 + (1.0 - br) * 1.35)
 
         # Color mult cannot push any channel white-point below the OS floor.
-        floor_m = min(1.0, self._WP_FLOOR / scale)
+        floor_m = min(1.0, self._WP_FLOOR / max(scale, 1e-6))
         m_eff = max(m, floor_m)
         return min(65535, int(round((n ** power) * scale * m_eff * 65535.0)))
 
@@ -697,9 +696,12 @@ class XLightApp:
         self.hw_backend = HardwareBrightnessBackend()
         self.lang = self.config.get('language', 'en')
         self._timer = None
+        self._save_timer = None
+        self._hw_timer = None
         self._building = True
         self._logo_photo = None
         self._icon_photo = None
+        self._master_sync = False  # prevent master↔per-display feedback loops
 
         self._refresh_displays()
 
@@ -708,10 +710,10 @@ class XLightApp:
         self.root.configure(bg=COLORS['bg_secondary'])
         self.root.resizable(False, False)
 
-        # Header + cards + footer (XLab spacing)
+        # Header + master card + per-display cards + footer
         n_displays = len(self.displays)
         win_w = 480
-        win_h = 56 + n_displays * 108 + 48
+        win_h = 56 + 118 + n_displays * 108 + 48
         self.root.geometry(f'{win_w}x{win_h}')
 
         self.root.update_idletasks()
@@ -835,6 +837,56 @@ class XLightApp:
         main = tk.Frame(outer, bg=COLORS['bg_secondary'])
         main.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
 
+        # Master control + quick presets (strong, one-shot dimming)
+        master_wrap = tk.Frame(main, bg=COLORS['border'], padx=1, pady=1)
+        master_wrap.pack(fill=tk.X, pady=(0, 12))
+        master = tk.Frame(master_wrap, bg=COLORS['card_bg'])
+        master.pack(fill=tk.BOTH, expand=True)
+        mpad = tk.Frame(master, bg=COLORS['card_bg'])
+        mpad.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
+
+        mrow1 = tk.Frame(mpad, bg=COLORS['card_bg'])
+        mrow1.pack(fill=tk.X, pady=(0, 8))
+        tk.Label(mrow1, text='ALL DISPLAYS', bg=COLORS['card_bg'],
+                 fg=COLORS['primary'], font=FONT_SMALL).pack(side=tk.LEFT)
+        avg0 = sum(d['brightness'] for d in self.displays) // max(1, len(self.displays))
+        self.master_badge = tk.Label(
+            mrow1, text=f'  {avg0}%  ',
+            bg=COLORS['primary'], fg=COLORS['white'], font=FONT_UI_BOLD,
+        )
+        self.master_badge.pack(side=tk.RIGHT)
+
+        mrow2 = tk.Frame(mpad, bg=COLORS['card_bg'])
+        mrow2.pack(fill=tk.X)
+        mrow2.columnconfigure(0, weight=1)
+        self.master_canvas = tk.Canvas(mrow2, height=26, bg=COLORS['card_bg'],
+                                       highlightthickness=0, cursor='hand2')
+        self.master_canvas.grid(row=0, column=0, sticky='ew')
+        self.sliders['master'] = {
+            'canvas': self.master_canvas,
+            'value': avg0,
+            'dragging': False,
+        }
+        self.master_canvas.bind('<Configure>', lambda e: self._draw_slider('master'))
+        self.master_canvas.bind('<Button-1>', lambda e: self._master_press(e))
+        self.master_canvas.bind('<B1-Motion>', lambda e: self._master_drag(e))
+        self.master_canvas.bind('<ButtonRelease-1>', lambda e: self._master_release(e))
+
+        # Quick presets
+        presets = tk.Frame(mpad, bg=COLORS['card_bg'])
+        presets.pack(fill=tk.X, pady=(10, 0))
+        tk.Label(presets, text='Quick', bg=COLORS['card_bg'], fg=COLORS['text_dim'],
+                 font=FONT_SMALL).pack(side=tk.LEFT, padx=(0, 8))
+        for pct in (20, 40, 60, 80, 100):
+            b = tk.Button(
+                presets, text=f'{pct}%', command=lambda p=pct: self._set_all_brightness(p),
+                bg=COLORS['primary_50'], fg=COLORS['primary_600'],
+                activebackground=COLORS['primary'], activeforeground=COLORS['white'],
+                font=FONT_SMALL, relief=tk.FLAT, bd=0, padx=10, pady=4,
+                cursor='hand2', highlightthickness=0,
+            )
+            b.pack(side=tk.LEFT, padx=3)
+
         for i, d in enumerate(self.displays):
             # Card: white surface, gray border (XLab card)
             card_wrap = tk.Frame(main, bg=COLORS['border'], padx=1, pady=1)
@@ -896,7 +948,7 @@ class XLightApp:
 
         foot_inner = tk.Frame(footer, bg=COLORS['footer_bg'])
         foot_inner.pack(fill=tk.BOTH, expand=True, padx=16)
-        tk.Label(foot_inner, text='XLab  ·  Adjust brightness per display',
+        tk.Label(foot_inner, text='XLab  ·  Gamma + DDC stacked for stronger dim',
                  bg=COLORS['footer_bg'], fg=COLORS['text_dim'],
                  font=FONT_SMALL).pack(side=tk.LEFT, pady=12)
         tk.Label(foot_inner, text='5–100%', bg=COLORS['footer_bg'],
@@ -933,7 +985,9 @@ class XLightApp:
         )
 
     def _draw_slider(self, idx):
-        """Draw XLab teal slider track + thumb."""
+        """Draw XLab teal slider track + thumb (idx is int or 'master')."""
+        if idx not in self.sliders:
+            return
         canvas = self.sliders[idx]['canvas']
         value = self.sliders[idx]['value']
         canvas.delete('all')
@@ -943,23 +997,21 @@ class XLightApp:
         if w <= 1:
             return
 
-        track_h = 6
+        is_master = idx == 'master'
+        track_h = 8 if is_master else 6
         track_y = h // 2
-        thumb_r = 8
+        thumb_r = 9 if is_master else 8
         pad = thumb_r + 2
 
         # value range 5–100
         pct = (max(5, min(100, value)) - 5) / 95.0
         fill_x = pad + pct * (w - 2 * pad)
 
-        # Soft track (gray-200)
         canvas.create_line(pad, track_y, w - pad, track_y,
                            fill=COLORS['slider_bg'], width=track_h, capstyle='round')
-        # Teal fill (primary-500)
         if fill_x > pad:
             canvas.create_line(pad, track_y, fill_x, track_y,
                                fill=COLORS['slider_fill'], width=track_h, capstyle='round')
-        # Thumb with subtle ring
         canvas.create_oval(fill_x - thumb_r, track_y - thumb_r,
                            fill_x + thumb_r, track_y + thumb_r,
                            fill=COLORS['white'], outline=COLORS['primary'], width=2)
@@ -968,14 +1020,10 @@ class XLightApp:
                            fill=COLORS['primary'], outline='')
 
     def _slider_pos_to_value(self, x, idx):
-        """Convert canvas x position to slider value (5-100).
-
-        Windows gamma cannot go fully black; 5% is the practical minimum
-        and matches the documented UI range.
-        """
+        """Convert canvas x position to slider value (5-100)."""
         canvas = self.sliders[idx]['canvas']
         w = canvas.winfo_width()
-        pad = 9
+        pad = 11 if idx == 'master' else 9
         pct = (x - pad) / max(1, w - 2 * pad)
         pct = max(0.0, min(1.0, pct))
         return int(round(5 + pct * 95))
@@ -992,17 +1040,65 @@ class XLightApp:
 
     def _slider_release(self, event, idx):
         self.sliders[idx]['dragging'] = False
+        # Flush hardware immediately on release for snappy final state
+        if not self._building:
+            self._apply_all(include_hw=True)
 
-    def _update_slider(self, idx, val):
+    def _master_press(self, event):
+        self.sliders['master']['dragging'] = True
+        self._set_all_brightness(self._slider_pos_to_value(event.x, 'master'))
+
+    def _master_drag(self, event):
+        if self.sliders.get('master', {}).get('dragging'):
+            self._set_all_brightness(self._slider_pos_to_value(event.x, 'master'))
+
+    def _master_release(self, event):
+        if 'master' in self.sliders:
+            self.sliders['master']['dragging'] = False
+        if not self._building:
+            self._apply_all(include_hw=True)
+
+    def _set_all_brightness(self, val):
+        """Set every display (+ master) to the same brightness."""
+        val = max(5, min(100, int(val)))
+        self._master_sync = True
+        try:
+            if 'master' in self.sliders:
+                self.sliders['master']['value'] = val
+                self._draw_slider('master')
+            if hasattr(self, 'master_badge'):
+                self.master_badge.config(text=f'  {val}%  ')
+            for i in range(len(self.displays)):
+                self._update_slider(i, val, from_master=True)
+        finally:
+            self._master_sync = False
+        if not self._building:
+            self._schedule_apply()
+
+    def _sync_master_from_displays(self):
+        if self._master_sync or 'master' not in self.sliders:
+            return
+        avg = sum(d['brightness'] for d in self.displays) // max(1, len(self.displays))
+        self.sliders['master']['value'] = avg
+        self._draw_slider('master')
+        if hasattr(self, 'master_badge'):
+            self.master_badge.config(text=f'  {avg}%  ')
+
+    def _update_slider(self, idx, val, from_master=False):
         """Update slider value, label, and trigger brightness change."""
+        if idx == 'master':
+            self._set_all_brightness(val)
+            return
         val = max(5, min(100, int(val)))
         self.sliders[idx]['value'] = val
         if idx in self.val_labels:
             self.val_labels[idx].config(text=f'  {val}%  ')
         self.displays[idx]['brightness'] = val
         self._draw_slider(idx)
-        if not self._building:
-            self._debounce()
+        if not from_master:
+            self._sync_master_from_displays()
+            if not self._building:
+                self._schedule_apply()
 
     def _section_label(self, parent, text):
         tk.Label(parent, text=text.upper(), bg=COLORS['bg'], fg=COLORS['primary'],
@@ -1140,11 +1236,41 @@ class XLightApp:
         self._apply_all()
 
     def _debounce(self):
-        if self._timer is not None:
-            self.root.after_cancel(self._timer)
-        self._timer = self.root.after(50, self._apply_all)
+        """Legacy alias — schedule a full apply."""
+        self._schedule_apply()
 
-    def _apply_all(self):
+    def _schedule_apply(self):
+        """Snappy apply: gamma immediately, hardware slightly debounced, config later."""
+        # Gamma is free/local → apply every drag tick for instant visual feedback
+        self._apply_all(include_hw=False)
+        if self._hw_timer is not None:
+            try:
+                self.root.after_cancel(self._hw_timer)
+            except Exception:
+                pass
+        # DDC/CI is ~60–120ms per monitor; coalesce during drag
+        self._hw_timer = self.root.after(90, lambda: self._apply_all(include_hw=True))
+        if self._save_timer is not None:
+            try:
+                self.root.after_cancel(self._save_timer)
+            except Exception:
+                pass
+        self._save_timer = self.root.after(400, self._persist_config)
+
+    def _persist_config(self):
+        if self.displays:
+            self.config['brightness'] = self.displays[0]['brightness']
+        save_config(self.config)
+        self._save_timer = None
+
+    def _apply_all(self, include_hw=True):
+        """Apply brightness to all displays.
+
+        Both engines stack when enabled:
+          - Hardware (DDC/CI): real backlight
+          - Gamma: strong perceptual dim (instant, works on any cable)
+        Stacking makes the slider feel responsive and dramatic.
+        """
         temperature = self.config['temperature']
         use_gamma = self.config.get('use_gamma', True)
         use_hw = self.config.get('use_hardware', True)
@@ -1152,29 +1278,23 @@ class XLightApp:
         for d in self.displays:
             br_pct = max(5, min(100, int(d.get('brightness', 100))))
             brightness = br_pct / 100.0
-            hw_ok = False
-            if use_hw and d.get('hw_supported') and d.get('hw_index') is not None:
-                try:
-                    hw_ok = bool(self.hw_backend.set_brightness(br_pct, d['hw_index']))
-                except Exception:
-                    hw_ok = False
+
             if use_gamma:
                 try:
-                    # Avoid double-dimming: when DDC/CI already set backlight,
-                    # gamma only applies color temperature (brightness factor 1.0).
-                    gamma_br = 1.0 if hw_ok else brightness
-                    self.gamma_backend.set_gamma(d['gamma_id'], gamma_br, temperature)
+                    # Always dim via gamma when enabled (not only color temp).
+                    # Combined with HW this gives a clear, strong response.
+                    self.gamma_backend.set_gamma(d['gamma_id'], brightness, temperature)
                 except Exception:
                     pass
-            elif hw_ok:
-                # Gamma off but was previously applied — restore neutral ramp
-                # so color temp from a prior session does not linger.
-                pass
 
-        # Update config with first display brightness (primary)
+            if include_hw and use_hw and d.get('hw_supported') and d.get('hw_index') is not None:
+                try:
+                    self.hw_backend.set_brightness(br_pct, d['hw_index'])
+                except Exception:
+                    pass
+
         if self.displays:
             self.config['brightness'] = self.displays[0]['brightness']
-        save_config(self.config)
 
     def _apply_profile(self, name):
         profiles = self.config.get('profiles', {})
@@ -1227,8 +1347,7 @@ class XLightApp:
                     self.temp_label.config(text='6500K')
                 except Exception:
                     pass
-        for i in range(len(self.displays)):
-            self._update_slider(i, 100)
+        self._set_all_brightness(100)
         for d in self.displays:
             try:
                 self.gamma_backend.reset_gamma(d['gamma_id'])
@@ -1240,7 +1359,7 @@ class XLightApp:
                     self.hw_backend.set_brightness(100, d['hw_index'])
                 except Exception:
                     pass
-        save_config(self.config)
+        self._persist_config()
 
     def _on_close(self):
         if self._tray_icon:
