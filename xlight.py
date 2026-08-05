@@ -716,9 +716,8 @@ class XLightApp:
         self.root.resizable(False, False)
 
         # Header + per-display cards + footer
-        n_displays = len(self.displays)
         win_w = 480
-        win_h = 56 + n_displays * 108 + 48
+        win_h = 56 + 108 + 48   # header + single card + footer
         self.root.geometry(f'{win_w}x{win_h}')
 
         self.root.update_idletasks()
@@ -833,58 +832,57 @@ class XLightApp:
         main = tk.Frame(outer, bg=COLORS['bg_secondary'])
         main.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
 
-        for i, d in enumerate(self.displays):
-            # Card: white surface, gray border (XLab card)
-            card_wrap = tk.Frame(main, bg=COLORS['border'], padx=1, pady=1)
-            card_wrap.pack(fill=tk.X, pady=(0, 10) if i < len(self.displays) - 1 else 0)
-            card = tk.Frame(card_wrap, bg=COLORS['card_bg'])
-            card.pack(fill=tk.BOTH, expand=True)
+        # ── Single master card (all displays at once) ──
+        n = len(self.displays)
+        card_wrap = tk.Frame(main, bg=COLORS['border'], padx=1, pady=1)
+        card_wrap.pack(fill=tk.X)
+        card = tk.Frame(card_wrap, bg=COLORS['card_bg'])
+        card.pack(fill=tk.BOTH, expand=True)
 
-            pad = tk.Frame(card, bg=COLORS['card_bg'])
-            pad.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
+        pad = tk.Frame(card, bg=COLORS['card_bg'])
+        pad.pack(fill=tk.BOTH, expand=True, padx=14, pady=12)
 
-            # Row 1: accent chip + name + HW badge
-            row1 = tk.Frame(pad, bg=COLORS['card_bg'])
-            row1.pack(fill=tk.X, pady=(0, 10))
+        # Row 1: accent chip + label + badge
+        row1 = tk.Frame(pad, bg=COLORS['card_bg'])
+        row1.pack(fill=tk.X, pady=(0, 10))
 
-            chip = tk.Label(row1, text='  ', bg=COLORS['primary'], width=1,
-                            font=('Segoe UI', 8))
-            chip.pack(side=tk.LEFT, padx=(0, 8), ipady=6)
+        chip = tk.Label(row1, text='  ', bg=COLORS['primary'], width=1,
+                        font=('Segoe UI', 8))
+        chip.pack(side=tk.LEFT, padx=(0, 8), ipady=6)
 
-            name_col = tk.Frame(row1, bg=COLORS['card_bg'])
-            name_col.pack(side=tk.LEFT, fill=tk.X, expand=True)
-            tk.Label(name_col, text=d['name'], bg=COLORS['card_bg'], fg=COLORS['text'],
-                     font=FONT_UI_BOLD, anchor='w').pack(anchor='w')
-            status = 'DDC/CI' if d.get('hw_supported') else 'Gamma'
-            tk.Label(name_col, text=status, bg=COLORS['card_bg'], fg=COLORS['primary'],
-                     font=FONT_SMALL, anchor='w').pack(anchor='w')
+        name_col = tk.Frame(row1, bg=COLORS['card_bg'])
+        name_col.pack(side=tk.LEFT, fill=tk.X, expand=True)
+        tk.Label(name_col, text='All Displays', bg=COLORS['card_bg'],
+                 fg=COLORS['text'], font=FONT_UI_BOLD, anchor='w').pack(anchor='w')
+        tk.Label(name_col, text=f'{n} monitors', bg=COLORS['card_bg'],
+                 fg=COLORS['primary'], font=FONT_SMALL, anchor='w').pack(anchor='w')
 
-            # Value badge (teal soft chip)
-            badge = tk.Label(row1, text=f"  {d['brightness']}%  ",
-                             bg=COLORS['primary_50'], fg=COLORS['primary_600'],
-                             font=FONT_UI_BOLD)
-            badge.pack(side=tk.RIGHT)
-            self.badge_labels[i] = badge
-            self.val_labels[i] = badge
+        master_br = self.displays[0]['brightness'] if self.displays else 100
+        badge = tk.Label(row1, text=f"  {master_br}%  ",
+                         bg=COLORS['primary_50'], fg=COLORS['primary_600'],
+                         font=FONT_UI_BOLD)
+        badge.pack(side=tk.RIGHT)
+        self.badge_labels[0] = badge
+        self.val_labels[0] = badge
 
-            # Row 2: slider
-            row2 = tk.Frame(pad, bg=COLORS['card_bg'])
-            row2.pack(fill=tk.X)
-            row2.columnconfigure(0, weight=1)
+        # Row 2: single slider (index 0 = master)
+        row2 = tk.Frame(pad, bg=COLORS['card_bg'])
+        row2.pack(fill=tk.X)
+        row2.columnconfigure(0, weight=1)
 
-            canvas = tk.Canvas(row2, height=22, bg=COLORS['card_bg'],
-                               highlightthickness=0, cursor='hand2')
-            canvas.grid(row=0, column=0, sticky='ew')
-            self.slider_canvases[i] = canvas
-            self.sliders[i] = {
-                'canvas': canvas,
-                'value': d['brightness'],
-                'dragging': False,
-            }
-            canvas.bind('<Configure>', lambda e, idx=i: self._draw_slider(idx))
-            canvas.bind('<Button-1>', lambda e, idx=i: self._slider_press(e, idx))
-            canvas.bind('<B1-Motion>', lambda e, idx=i: self._slider_drag(e, idx))
-            canvas.bind('<ButtonRelease-1>', lambda e, idx=i: self._slider_release(e, idx))
+        canvas = tk.Canvas(row2, height=22, bg=COLORS['card_bg'],
+                           highlightthickness=0, cursor='hand2')
+        canvas.grid(row=0, column=0, sticky='ew')
+        self.slider_canvases[0] = canvas
+        self.sliders[0] = {
+            'canvas': canvas,
+            'value': master_br,
+            'dragging': False,
+        }
+        canvas.bind('<Configure>', lambda e: self._draw_slider(0))
+        canvas.bind('<Button-1>', lambda e: self._slider_press(e, 0))
+        canvas.bind('<B1-Motion>', lambda e: self._slider_drag(e, 0))
+        canvas.bind('<ButtonRelease-1>', lambda e: self._slider_release(e, 0))
 
         # ── Footer ──
         footer = tk.Frame(outer, bg=COLORS['footer_bg'], height=44)
@@ -894,7 +892,7 @@ class XLightApp:
 
         foot_inner = tk.Frame(footer, bg=COLORS['footer_bg'])
         foot_inner.pack(fill=tk.BOTH, expand=True, padx=16)
-        tk.Label(foot_inner, text='XLab  ·  Adjust brightness per display',
+        tk.Label(foot_inner, text='XLab  ·  Adjust brightness for all displays',
                  bg=COLORS['footer_bg'], fg=COLORS['text_dim'],
                  font=FONT_SMALL).pack(side=tk.LEFT, pady=12)
         tk.Label(foot_inner, text='5–100%', bg=COLORS['footer_bg'],
@@ -1246,8 +1244,7 @@ class XLightApp:
                     self.temp_label.config(text=f'{t_val}K')
                 except Exception:
                     pass
-        for i in range(len(self.displays)):
-            self._update_slider(i, b)
+        self._update_slider(0, b)
         # Ensure apply even if sliders did not change (same brightness, new temp)
         if not self._building:
             self._debounce()
@@ -1279,8 +1276,7 @@ class XLightApp:
                     self.temp_label.config(text='6500K')
                 except Exception:
                     pass
-        for i in range(len(self.displays)):
-            self._update_slider(i, 100)
+        self._update_slider(0, 100)
         for d in self.displays:
             try:
                 self.gamma_backend.reset_gamma(d['gamma_id'])
