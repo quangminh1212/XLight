@@ -704,6 +704,7 @@ class XLightApp:
         self._timer = None
         self._save_timer = None
         self._hw_timer = None
+        self._gamma_refresh_timer = None
         self._building = True
         self._logo_photo = None
         self._icon_photo = None
@@ -986,6 +987,7 @@ class XLightApp:
         self.sliders[idx]['dragging'] = True
         val = self._slider_pos_to_value(event.x, idx)
         self._update_slider(idx, val)
+        self._start_gamma_refresh()
 
     def _slider_drag(self, event, idx):
         if self.sliders[idx]['dragging']:
@@ -994,10 +996,29 @@ class XLightApp:
 
     def _slider_release(self, event, idx):
         self.sliders[idx]['dragging'] = False
+        self._stop_gamma_refresh()
         # Flush hardware immediately on release for snappy final state
         if not self._building:
             self._apply_all(include_hw=True)
 
+    def _start_gamma_refresh(self):
+        """Periodic gamma re-apply to prevent monitors from resetting brightness."""
+        self._stop_gamma_refresh()
+        self._gamma_refresh_once()
+
+    def _gamma_refresh_once(self):
+        if not any(s.get('dragging') for s in self.sliders.values()):
+            return
+        self._apply_all(include_hw=False)
+        self._gamma_refresh_timer = self.root.after(300, self._gamma_refresh_once)
+
+    def _stop_gamma_refresh(self):
+        if self._gamma_refresh_timer is not None:
+            try:
+                self.root.after_cancel(self._gamma_refresh_timer)
+            except Exception:
+                pass
+            self._gamma_refresh_timer = None
     def _update_slider(self, idx, val):
         """Update the master slider value and apply brightness to ALL displays."""
         val = max(5, min(100, int(val)))
