@@ -1202,13 +1202,14 @@ class XLightApp:
 
             if include_hw and can_hw:
                 try:
-                    hw_ok = bool(self.hw_backend.set_brightness(br_pct, d['hw_index']))
-                    # Verify DDC actually stuck (some "Generic" monitors report support
-                    # but ignore writes — then % would not match real brightness).
-                    if hw_ok:
-                        actual = self.hw_backend.get_brightness(d['hw_index'])
-                        if actual is not None and abs(int(actual) - br_pct) > 8:
-                            hw_ok = False
+                    self.hw_backend.set_brightness(br_pct, d['hw_index'])
+                    # Read-back verify: DDC may accept the command but monitor
+                    # ignores it (Generic PnP monitors are common for this).
+                    actual = self.hw_backend.get_brightness(d['hw_index'])
+                    if actual is not None and abs(int(actual) - br_pct) > 8:
+                        hw_ok = False  # DDC failed — fall back to gamma
+                    else:
+                        hw_ok = True
                 except Exception:
                     hw_ok = False
 
@@ -1217,11 +1218,8 @@ class XLightApp:
                     if hw_ok:
                         # DDC owns brightness — gamma only for color temp
                         gamma_br = 1.0
-                    elif can_hw and not include_hw:
-                        # Waiting for DDC tick: keep gamma neutral to avoid double-dark
-                        gamma_br = 1.0
                     else:
-                        # No reliable DDC → software dim tracks the % label
+                        # No DDC or DDC failed → software dim tracks the %
                         gamma_br = brightness
                     self.gamma_backend.set_gamma(d['gamma_id'], gamma_br, temperature)
                 except Exception:
