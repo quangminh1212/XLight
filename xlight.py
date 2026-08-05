@@ -1003,11 +1003,13 @@ class XLightApp:
     def _update_slider(self, idx, val):
         """Update slider value, label, and trigger brightness change."""
         val = max(5, min(100, int(val)))
-        self.sliders[idx]['value'] = val
-        if idx in self.val_labels:
-            self.val_labels[idx].config(text=f'  {val}%  ')
-        self.displays[idx]['brightness'] = val
-        self._draw_slider(idx)
+        # Sync all displays to the same brightness value
+        for i in range(len(self.displays)):
+            self.sliders[i]['value'] = val
+            if i in self.val_labels:
+                self.val_labels[i].config(text=f'  {val}%  ')
+            self.displays[i]['brightness'] = val
+            self._draw_slider(i)
         if not self._building:
             self._schedule_apply()
 
