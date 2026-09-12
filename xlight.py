@@ -1235,13 +1235,17 @@ class XLightApp:
 
             if use_gamma:
                 try:
-                    if hw_ok:
-                        # DDC owns brightness — gamma only for color temp
-                        gamma_br = 1.0
+                    if br_pct >= 100:
+                        # 100% means full native output; clear stale software dimming.
+                        self.gamma_backend.reset_gamma(d['gamma_id'])
                     else:
-                        # No DDC or DDC failed → software dim tracks the %
-                        gamma_br = brightness
-                    self.gamma_backend.set_gamma(d['gamma_id'], gamma_br, temperature)
+                        if hw_ok:
+                            # DDC owns brightness — gamma only for color temp
+                            gamma_br = 1.0
+                        else:
+                            # No DDC or DDC failed → software dim tracks the %
+                            gamma_br = brightness
+                        self.gamma_backend.set_gamma(d['gamma_id'], gamma_br, temperature)
                 except Exception:
                     pass
 
