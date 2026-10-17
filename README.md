@@ -88,7 +88,7 @@ xlight
 ### Method 2: npm (Node.js wrapper)
 
 ```bash
-npm install -g xlight
+pnpm add -g xlight
 ```
 
 This installs the `xlight` command globally. It requires Python 3.8+ to be installed on your system.
